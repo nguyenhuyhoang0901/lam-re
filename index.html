@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Chuyện Làm Rể</title>
+<meta name="theme-color" content="#c8352b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Làm Rể">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;600;700&family=Playfair+Display:wght@700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<script>
+/* Ghi nhận lỗi nạp/chạy script từ sớm để js/main.js hiển thị thông báo thân thiện */
+window.__LR_ERR = [];
+window.addEventListener('error', function(e){
+  var t = e.target;
+  if(t && t.tagName === 'SCRIPT') window.__LR_ERR.push((t.getAttribute('src') || 'script') + ' (không tải được)');
+  else if(t === window) window.__LR_ERR.push(e.message);
+}, true);
+</script>
+</head>
+<body>
+
+<!-- Loader -->
+<div id="loading">
+  <div class="seal"><span>LÀM</span><span>RỂ</span></div>
+  <div class="ltitle">Chuyện Làm Rể</div>
+  <div class="bar"><i id="bar"></i></div>
+  <div id="ltxt">Đang chuẩn bị…</div>
+</div>
+
+<!-- Canvas -->
+<canvas id="cv" tabindex="0"></canvas>
+
+<!-- HUD -->
+<div id="hud" class="hud" hidden>
+  <button class="btn lab" id="hudBack">‹ Ải</button>
+  <div class="ht"><b id="hudTitle"></b><span id="hudSub"></span></div>
+  <div class="stats" id="hudStats"></div>
+  <button class="btn" id="hudPause" aria-label="Tạm dừng">II</button>
+</div>
+
+<!-- Pad -->
+<div id="pad" hidden>
+  <div class="dpad">
+    <button data-k="up" aria-label="Lên">▲</button>
+    <button data-k="left" aria-label="Trái">◀</button>
+    <button data-k="right" aria-label="Phải">▶</button>
+    <button data-k="down" aria-label="Xuống">▼</button>
+  </div>
+  <button class="abil" id="abil" aria-label="Vồ">VỒ</button>
+</div>
+
+<!-- Title -->
+<div id="title" class="ov page">
+  <div class="wrap narrow">
+    <div class="strip"></div>
+    <div class="seal"><span>LÀM</span><span>RỂ</span></div>
+    <h1>Chuyện Làm Rể</h1>
+    <p class="story">Muốn cưới được con gái nhà người ta, chàng trai phải trải qua thử thách làm mâm cỗ. Chinh phục từng cửa ải để cả nhà vợ gật đầu cho cưới!</p>
+    <div class="row" style="justify-content:center">
+      <button class="btn red" id="btnStart" style="font-size:20px;padding:12px 28px">Vào chơi</button>
+    </div>
+    <div class="strip" style="margin-top:28px"></div>
+  </div>
+</div>
+
+<!-- Chapters -->
+<div id="chapters" class="ov page">
+  <div class="wrap">
+    <div class="top"><h2>Chọn chương</h2></div>
+    <div class="grid" id="chGrid"></div>
+	<div class="foot">
+	  <button class="btn gold" id="btnCloud" hidden>☁ Lưu tiến trình</button>
+	  <button class="btn" id="btnInstall" hidden>⤓ Thêm vào màn hình chính</button>
+
+	  <a class="btn" id="btnCommunity" href="https://www.facebook.com/groups/1532867932218997" target="_blank" rel="noopener noreferrer">
+		<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="vertical-align:-3px;margin-right:6px">
+		  <path d="M24 12.073C24 5.446 18.627 0 12 0S0 5.446 0 12.073c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+		</svg>Cộng đồng
+	  </a>
+	  <button class="btn soundBtn">Âm thanh: Bật</button>
+	</div>
+  </div>
+</div>
+
+<!-- Album -->
+<div id="album" class="ov page">
+  <div class="wrap">
+    <div class="top">
+      <button class="btn sm" id="albumBack">‹ Chương</button>
+      <h2 id="albumTitle"></h2>
+    </div>
+    <div class="grid" id="lvGrid"></div>
+  </div>
+</div>
+
+<!-- Level intro -->
+<div id="intro" class="ov page">
+  <div class="wrap narrow">
+    <div class="top">
+      <button class="btn sm" id="introBack">‹ Ải</button>
+      <h2 id="inTitle"></h2>
+    </div>
+    <div class="card">
+      <p id="inDesc" class="lead" style="margin-top:0"></p>
+      <ul class="rules" id="inRules"></ul>
+      <div id="inExtra"></div>
+      <div class="col" id="inOpts"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Cloud modal -->
+<div id="cloud" class="ov modal" role="dialog" aria-label="Lưu tiến trình lên cloud">
+  <div class="card">
+    <h3>Lưu tiến trình</h3>
+    <p class="note" style="margin:6px 0 12px">Tiến trình luôn được lưu trong máy. Tạo mã lưu để mang sang thiết bị khác, không cần tài khoản.</p>
+    <div id="cCodeBox" hidden>
+      <div class="note" style="margin-bottom:4px">Mã lưu của bạn</div>
+      <div class="code" id="cCode">—</div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn sm" id="cCopy">Chép mã</button>
+        <button class="btn sm gold" id="cSync">Đồng bộ ngay</button>
+      </div>
+    </div>
+    <div id="cNone"><button class="btn red" id="cGen" style="width:100%">Tạo mã lưu &amp; đẩy lên cloud</button></div>
+    <hr class="sep">
+    <div class="note" style="margin-bottom:6px">Đã có mã từ thiết bị khác?</div>
+    <input class="field" id="cIn" placeholder="CHUOT-XXXX-XXXX" maxlength="16" autocomplete="off" spellcheck="false">
+    <button class="btn" id="cRestore" style="width:100%;margin-top:8px">Khôi phục từ mã</button>
+    <p class="note" id="cMsg" style="margin-top:10px"></p>
+    <button class="btn sm" id="cClose" style="margin-top:10px">Đóng</button>
+  </div>
+</div>
+
+<!-- Pause modal -->
+<div id="pause" class="ov modal" role="dialog" aria-label="Tạm dừng">
+  <div class="card center">
+    <h2>Tạm dừng</h2>
+    <div class="col" style="margin-top:14px">
+      <button class="btn red" id="pResume">Tiếp tục</button>
+      <button class="btn" id="pRetry">Chơi lại</button>
+      <button class="btn soundBtn">Âm thanh: Bật</button>
+      <button class="btn" id="pAlbum">Về thử thách</button>
+    </div>
+  </div>
+</div>
+
+<!-- End modal -->
+<div id="end" class="ov modal" role="dialog" aria-label="Kết quả">
+  <div class="card center">
+    <div class="stars" id="endStars"></div>
+    <h2 id="endTitle"></h2>
+    <p class="msg" id="endMsg"></p>
+    <div class="big" id="endScore"></div>
+    <div class="best" id="endBest"></div>
+    <dl class="sl" id="endStats"></dl>
+    <div class="col" style="margin-top:16px">
+      <button class="btn red" id="endNext">Ải tiếp theo</button>
+      <button class="btn" id="endRetry">Chơi lại</button>
+      <button class="btn" id="endAlbum">Về thử thách</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" role="status"></div>
+<div id="err" hidden><span id="errMsg">Có lỗi xảy ra.</span><button class="btn sm" id="errReload">Tải lại</button></div>
+
+
+<script src="js/config.js"></script>
+<script src="js/util.js"></script>
+<script src="js/registry.js"></script>
+<script src="js/store.js"></script>
+<script src="js/cloud.js"></script>
+<script src="js/sound.js"></script>
+<script src="js/input.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/chapters.js"></script>
+<!-- Mỗi ải một file. Thêm ải mới: tạo file trong js/levels/<chương>/ rồi thêm 1 dòng ở đây -->
+<script src="js/levels/ch1/01-gio.js"></script>
+<script src="js/levels/ch1/02-ga.js"></script>
+<script src="js/levels/ch1/03-thit-xien.js"></script>
+<script src="js/levels/ch1/04-xoi.js"></script>
+<script src="js/levels/ch1/05-canh-mang.js"></script>
+<script src="js/levels/ch1/06-nom.js"></script>
+<script src="js/levels/ch1/07-tom.js"></script>
+<script src="js/levels/ch1/08-hoa-qua.js"></script>
+<script src="js/levels/ch1/09-chuoi-nau.js"></script>
+<script src="js/levels/ch1/10-kiem-ke-thuc-don.js"></script>
+<script src="js/levels/ch1/11-don-mam.js"></script>
+<script src="js/levels/ch1/12-chuc-ruou.js"></script>
+<script src="js/levels/ch1/13-don-dep.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
