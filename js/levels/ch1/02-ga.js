@@ -1,7 +1,7 @@
 /* Chương 1 · Ải 2: Gà — bản khó đầy đủ (10 gà, 1 đợt)
    Cơ chế: gà né dive · gà trống phản công · stack tốc độ · gà bay
    MỚI: gà trống gáy (làm player đứng hình) · gà mái đẻ trứng (dẫm phải bị chậm)
-   UPDATE: Joystick tròn 360° cho giao diện Mobile (hỗ trợ multi-touch) */
+   UPDATE: Floating Joystick tròn 360° cho giao diện Mobile (chạm nửa trái màn hình để hiện tâm) */
 (function(){
 'use strict';
 const LR = window.LR;
@@ -67,13 +67,14 @@ const mod = (function(){
   let eggs = [], rings = [];
   let aim = null, stackMul = 1;
 
-  /* ── Joystick tròn cho Mobile ── */
+  /* ── Floating Joystick cho Mobile ── */
   let isMobile = false;
   const joy = {
     active: false, id: null,
     cx: 0, cy: 0, x: 0, y: 0,
     r: 50, knobR: 22,
-    vx: 0, vy: 0, m: 0
+    vx: 0, vy: 0, m: 0,
+    usedOnce: false
   };
   let hiddenDpadStyle = null;
 
@@ -109,15 +110,9 @@ const mod = (function(){
       s:rnd(.7,1.3), c:Math.random()<.6?'#6e9a54':'#b99a55'
     });
 
-    /* Định vị Joystick ở góc dưới bên trái */
+    /* Kích thước Floating Joystick */
     joy.r = 48 * u;
     joy.knobR = 21 * u;
-    joy.cx = arena.x0 + joy.r + 18 * u;
-    joy.cy = arena.y1 - joy.r - 18 * u;
-    if(!joy.active){
-      joy.x = joy.cx;
-      joy.y = joy.cy;
-    }
 
     if(P){
       clampIn(P, 14*u);
@@ -125,7 +120,7 @@ const mod = (function(){
     }
   }
 
-  /* ── Xử lý Multi-touch cho Joystick & Chạm vồ gà ── */
+  /* ── Xử lý Multi-touch cho Floating Joystick & Chạm vồ gà ── */
   function getCanvasPos(touch){
     const cv = ctx && ctx.canvas;
     if(!cv) return {x: touch.clientX, y: touch.clientY};
@@ -134,6 +129,10 @@ const mod = (function(){
       x: (touch.clientX - rect.left) * (W / rect.width),
       y: (touch.clientY - rect.top)  * (H / rect.height)
     };
+  }
+
+  function isLeftHalfZone(px, py){
+    return py >= arena.y0 && px <= W * 0.52;
   }
 
   function updateJoyKnob(px, py){
@@ -157,8 +156,6 @@ const mod = (function(){
   function resetJoy(){
     joy.active = false;
     joy.id = null;
-    joy.x = joy.cx;
-    joy.y = joy.cy;
     joy.vx = 0;
     joy.vy = 0;
     joy.m = 0;
@@ -169,17 +166,23 @@ const mod = (function(){
     for(let i = 0; i < e.changedTouches.length; i++){
       const t = e.changedTouches[i];
       const pos = getCanvasPos(t);
-      const distToJoy = Math.hypot(pos.x - joy.cx, pos.y - joy.cy);
-      // Nếu chạm vào vùng Joystick
-      if(!joy.active && distToJoy <= joy.r * 1.45){
+
+      // Nếu chưa kích hoạt Joystick và chạm vào nửa trái màn hình -> đặt tâm Joystick tại điểm chạm
+      if(!joy.active && isLeftHalfZone(pos.x, pos.y)){
         joy.active = true;
+        joy.usedOnce = true;
         joy.id = t.identifier;
+        // Giữ tâm không bị tràn ra ngoài viền sân
+        const pad = joy.r + 6 * u;
+        joy.cx = clamp(pos.x, arena.x0 + pad, W * 0.55);
+        joy.cy = clamp(pos.y, arena.y0 + pad, arena.y1 - pad);
         updateJoyKnob(pos.x, pos.y);
         if(e.cancelable) e.preventDefault();
       } else {
-        // Nếu đang giữ Joystick bằng ngón khác và chạm thêm ngón thứ 2 lên sân để vồ gà
-        if(joy.active && pos.y >= arena.y0 && pos.y <= arena.y1){
+        // Chạm vào nửa phải màn hình (hoặc ngón thứ 2 khi đang giữ Joystick) -> Vồ gà
+        if(pos.y >= arena.y0 && pos.y <= arena.y1){
           triggerDiveAt(pos.x, pos.y);
+          if(e.cancelable) e.preventDefault();
         }
       }
     }
@@ -221,7 +224,6 @@ const mod = (function(){
       }
     `;
     document.head.appendChild(hiddenDpadStyle);
-    // Ẩn thêm các button chỉ chứa ký tự mũi tên ◀ ▲ ▼ ▶ nếu không dùng class chuẩn
     document.querySelectorAll('button, .btn, [role="button"]').forEach(el => {
       const txt = (el.textContent || '').trim();
       if(['◀','▲','▼','▶','⬅','⬆','⬇','➡'].includes(txt)){
@@ -268,6 +270,7 @@ const mod = (function(){
     clock = 0; left = TIME; caught = 0; misses = 0; done = false; shake = 0;
     pops = []; bits = []; ripples = []; eggs = []; rings = [];
     aim = null; stackMul = 1;
+    joy.usedOnce = false;
     resetJoy();
     P = {
       x:(arena.x0+arena.x1)/2, y:arena.y1 - 50*u, r:14*u,
@@ -445,8 +448,8 @@ const mod = (function(){
   }
 
   function pointerDown(x, y){
-    // Không kích hoạt vồ gà nếu người chơi đang bấm vào vùng Joystick trên mobile
-    if(isMobile && Math.hypot(x - joy.cx, y - joy.cy) <= joy.r * 1.45) return;
+    // Trên mobile, sự kiện chạm ở nửa trái được dành cho Floating Joystick
+    if(isMobile && isLeftHalfZone(x, y)) return;
     triggerDiveAt(x, y);
   }
 
@@ -674,7 +677,7 @@ const mod = (function(){
     c.fleeing = fleeing;
   }
 
-  /* ── Lấy vector di chuyển kết hợp từ Joystick tròn & Bàn phím ── */
+  /* ── Lấy vector di chuyển kết hợp từ Floating Joystick & Bàn phím ── */
   function getMoveVec(){
     if(joy.active && joy.m > 0){
       return { x: joy.vx * joy.m, y: joy.vy * joy.m, m: joy.m };
@@ -1284,13 +1287,35 @@ const mod = (function(){
     }
   }
 
-  /* ── Vẽ cụm nút di chuyển dạng tròn (Joystick) trên Mobile ── */
+  /* ── Vẽ Floating Joystick trên Mobile ── */
   function drawJoystick(){
     if(!isMobile) return;
-    ctx.save();
-    ctx.globalAlpha = joy.active ? 0.88 : 0.48;
 
-    // Vòng tròn đế lớn
+    // Gợi ý mờ ở góc dưới trái trong 4 giây đầu nếu người chơi chưa chạm thử
+    if(!joy.active){
+      if(!joy.usedOnce && clock < 4.0){
+        const hx = arena.x0 + joy.r + 18 * u;
+        const hy = arena.y1 - joy.r - 18 * u;
+        const fade = clock > 3.0 ? (4.0 - clock) : 1;
+        ctx.save();
+        ctx.globalAlpha = 0.28 * fade;
+        ctx.fillStyle = 'rgba(60, 40, 20, 0.3)';
+        ctx.strokeStyle = 'rgba(255, 245, 220, 0.85)';
+        ctx.lineWidth = 2 * u;
+        ctx.setLineDash([5 * u, 4 * u]);
+        ctx.beginPath(); ctx.arc(hx, hy, joy.r * 0.85, 0, TAU); ctx.fill(); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#e6b422';
+        ctx.beginPath(); ctx.arc(hx, hy, joy.knobR * 0.8, 0, TAU); ctx.fill();
+        ctx.restore();
+      }
+      return;
+    }
+
+    ctx.save();
+    ctx.globalAlpha = 0.88;
+
+    // Vòng tròn đế lớn xuất hiện tại điểm chạm
     ctx.fillStyle = 'rgba(60, 40, 20, 0.28)';
     ctx.strokeStyle = 'rgba(255, 245, 220, 0.85)';
     ctx.lineWidth = 2.5 * u;
@@ -1306,6 +1331,14 @@ const mod = (function(){
     ctx.arc(joy.cx, joy.cy, joy.r * 0.62, 0, TAU);
     ctx.stroke();
 
+    // Đường nối từ tâm tới núm xoay
+    ctx.strokeStyle = 'rgba(230, 180, 34, 0.55)';
+    ctx.lineWidth = 3 * u;
+    ctx.beginPath();
+    ctx.moveTo(joy.cx, joy.cy);
+    ctx.lineTo(joy.x, joy.y);
+    ctx.stroke();
+
     // 4 chấm định hướng nhỏ trên vành
     ctx.fillStyle = 'rgba(255, 245, 220, 0.6)';
     for(let i = 0; i < 4; i++){
@@ -1317,8 +1350,8 @@ const mod = (function(){
       ctx.fill();
     }
 
-    // Núm gạt tròn ở tâm / theo ngón tay
-    ctx.fillStyle = joy.active ? '#c8352b' : '#e6b422';
+    // Núm gạt tròn theo ngón tay
+    ctx.fillStyle = '#c8352b';
     ctx.strokeStyle = INK;
     ctx.lineWidth = 2.2 * u;
     ctx.beginPath();
@@ -1403,7 +1436,7 @@ const mod = (function(){
 
     ctx.restore();
 
-    // Vẽ Joystick tròn ngoài cùng để không bị rung theo hiệu ứng camera shake
+    // Vẽ Floating Joystick ngoài cùng để không bị rung khi có hiệu ứng shake
     drawJoystick();
   }
 
@@ -1415,8 +1448,8 @@ LR.level('ch1', {
   title: 'Gà', status: 'ready', pad: true,
   desc: 'Bắt đủ con gà trong vườn để làm mâm cỗ!',
   rules: [
-    '<b>Di chuyển:</b> mũi tên / WASD, hoặc xoay nút tròn (Joystick) trên màn hình cảm ứng.',
-    '<b>Vồ gà:</b> Space / Z / nút VỒ — hoặc chạm vào sân (chạm gần gà sẽ tự nhắm).',
+    '<b>Di chuyển:</b> mũi tên / WASD, hoặc chạm giữ bất kỳ đâu ở nửa trái màn hình để xoay Joystick tròn.',
+    '<b>Vồ gà:</b> Space / Z / nút VỒ — hoặc chạm vào nửa phải sân (chạm gần gà sẽ tự nhắm).',
     '<b>Vồ trượt:</b> choáng 0,9s và trừ 3s.',
     '<b>Gà né dai:</b> xác suất né cao — hãy đón đầu, đừng vồ thẳng.',
     '<b>Gà vỗ cánh bay:</b> khi bị dồn sát, gà bay xa ~250px. Đợi nó hạ cánh rồi hãy vồ!',
