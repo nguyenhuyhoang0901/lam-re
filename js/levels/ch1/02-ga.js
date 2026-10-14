@@ -1,6 +1,7 @@
-/* Chương 1 · Ải 2: Gà — bản khó đầy đủ (5 gà, 1 đợt)
+/* Chương 1 · Ải 2: Gà — bản khó đầy đủ (10 gà, 1 đợt)
    Cơ chế: gà né dive · gà trống phản công · stack tốc độ · gà bay
-   MỚI: gà trống gáy (làm player đứng hình) · gà mái đẻ trứng (dẫm phải bị chậm) */
+   MỚI: gà trống gáy (làm player đứng hình) · gà mái đẻ trứng (dẫm phải bị chậm)
+   UPDATE: Joystick tròn 360° cho giao diện Mobile (hỗ trợ multi-touch) */
 (function(){
 'use strict';
 const LR = window.LR;
@@ -42,7 +43,7 @@ const mod = (function(){
 
   /* ── Gà trống GÁY ── */
   const CROW_CD_MIN   = 5.0;   // hồi chiêu tối thiểu
-  const CROW_CD_MAX   = 7.0;  // hồi chiêu tối đa
+  const CROW_CD_MAX   = 7.0;   // hồi chiêu tối đa
   const CROW_WINDUP   = 0.75;  // thời gian cảnh báo (gà đứng yên, "!!")
   const CROW_ACTIVE   = 0.55;  // thời gian hiệu ứng gáy
   const CROW_RANGE    = 195;   // tầm ảnh hưởng (×u)
@@ -56,7 +57,7 @@ const mod = (function(){
   const EGG_R         = 9;     // bán kính trứng (×u)
   const EGG_SLOW_T    = 1.6;   // thời gian bị chậm sau khi dẫm
   const EGG_SLOW_MUL  = 0.45;  // hệ số tốc độ (chậm 55%)
-  const EGG_MAX       = 15;     // số trứng tối đa trên sân
+  const EGG_MAX       = 15;    // số trứng tối đa trên sân
 
   const reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
   let ctx = null, W = 360, H = 640, dpr = 1, u = 1;
@@ -65,6 +66,16 @@ const mod = (function(){
   let P = null, chickens = [], pops = [], bits = [], ripples = [];
   let eggs = [], rings = [];
   let aim = null, stackMul = 1;
+
+  /* ── Joystick tròn cho Mobile ── */
+  let isMobile = false;
+  const joy = {
+    active: false, id: null,
+    cx: 0, cy: 0, x: 0, y: 0,
+    r: 50, knobR: 22,
+    vx: 0, vy: 0, m: 0
+  };
+  let hiddenDpadStyle = null;
 
   const OBS_DEF = [
     {fx:.2,  fy:.26, r:32, t:'hay'},
@@ -80,8 +91,15 @@ const mod = (function(){
     return a;
   }
 
+  function checkMobile(){
+    return ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) ||
+           (window.matchMedia && matchMedia('(pointer: coarse)').matches) ||
+           (window.innerWidth <= 820);
+  }
+
   function resize(){
     ctx = G.ctx; W = G.W; H = G.H; dpr = G.dpr; u = G.u;
+    isMobile = checkMobile();
     arena = {x0:14*u, y0:G.top + 14*u, x1:W - 14*u, y1:H - 14*u};
     const aw = arena.x1 - arena.x0, ah = arena.y1 - arena.y0;
     obs = OBS_DEF.map(o=> ({x:arena.x0 + o.fx*aw, y:arena.y0 + o.fy*ah, r:o.r*u, t:o.t}));
@@ -90,10 +108,138 @@ const mod = (function(){
       x:rnd(arena.x0,arena.x1), y:rnd(arena.y0,arena.y1),
       s:rnd(.7,1.3), c:Math.random()<.6?'#6e9a54':'#b99a55'
     });
+
+    /* Định vị Joystick ở góc dưới bên trái */
+    joy.r = 48 * u;
+    joy.knobR = 21 * u;
+    joy.cx = arena.x0 + joy.r + 18 * u;
+    joy.cy = arena.y1 - joy.r - 18 * u;
+    if(!joy.active){
+      joy.x = joy.cx;
+      joy.y = joy.cy;
+    }
+
     if(P){
       clampIn(P, 14*u);
       chickens.forEach(c=> clampIn(c, c.r));
     }
+  }
+
+  /* ── Xử lý Multi-touch cho Joystick & Chạm vồ gà ── */
+  function getCanvasPos(touch){
+    const cv = ctx && ctx.canvas;
+    if(!cv) return {x: touch.clientX, y: touch.clientY};
+    const rect = cv.getBoundingClientRect();
+    return {
+      x: (touch.clientX - rect.left) * (W / rect.width),
+      y: (touch.clientY - rect.top)  * (H / rect.height)
+    };
+  }
+
+  function updateJoyKnob(px, py){
+    const dx = px - joy.cx, dy = py - joy.cy;
+    const dist = Math.hypot(dx, dy);
+    const maxD = joy.r;
+    if(dist > 4 * u){ // Vùng chết (deadzone) nhẹ
+      const clamped = Math.min(dist, maxD);
+      const ang = Math.atan2(dy, dx);
+      joy.x = joy.cx + Math.cos(ang) * clamped;
+      joy.y = joy.cy + Math.sin(ang) * clamped;
+      joy.vx = Math.cos(ang);
+      joy.vy = Math.sin(ang);
+      joy.m  = clamped / maxD;
+    } else {
+      joy.x = px; joy.y = py;
+      joy.vx = 0; joy.vy = 0; joy.m = 0;
+    }
+  }
+
+  function resetJoy(){
+    joy.active = false;
+    joy.id = null;
+    joy.x = joy.cx;
+    joy.y = joy.cy;
+    joy.vx = 0;
+    joy.vy = 0;
+    joy.m = 0;
+  }
+
+  function onTouchStart(e){
+    if(!isMobile || done || !P) return;
+    for(let i = 0; i < e.changedTouches.length; i++){
+      const t = e.changedTouches[i];
+      const pos = getCanvasPos(t);
+      const distToJoy = Math.hypot(pos.x - joy.cx, pos.y - joy.cy);
+      // Nếu chạm vào vùng Joystick
+      if(!joy.active && distToJoy <= joy.r * 1.45){
+        joy.active = true;
+        joy.id = t.identifier;
+        updateJoyKnob(pos.x, pos.y);
+        if(e.cancelable) e.preventDefault();
+      } else {
+        // Nếu đang giữ Joystick bằng ngón khác và chạm thêm ngón thứ 2 lên sân để vồ gà
+        if(joy.active && pos.y >= arena.y0 && pos.y <= arena.y1){
+          triggerDiveAt(pos.x, pos.y);
+        }
+      }
+    }
+  }
+
+  function onTouchMove(e){
+    if(!joy.active) return;
+    for(let i = 0; i < e.changedTouches.length; i++){
+      const t = e.changedTouches[i];
+      if(t.identifier === joy.id){
+        const pos = getCanvasPos(t);
+        updateJoyKnob(pos.x, pos.y);
+        if(e.cancelable) e.preventDefault();
+        break;
+      }
+    }
+  }
+
+  function onTouchEnd(e){
+    if(!joy.active) return;
+    for(let i = 0; i < e.changedTouches.length; i++){
+      if(e.changedTouches[i].identifier === joy.id){
+        resetJoy();
+        break;
+      }
+    }
+  }
+
+  function hideDOMFourButtons(){
+    if(!isMobile || hiddenDpadStyle) return;
+    hiddenDpadStyle = document.createElement('style');
+    /* Ẩn các nút mũi tên 4 hướng của DOM trên mobile nhưng giữ lại nút hành động (VỒ) */
+    hiddenDpadStyle.textContent = `
+      @media (max-width: 820px), (pointer: coarse) {
+        .dpad, .pad-dirs, .dir-pad, #dpad,
+        [data-dir], [data-key="ArrowUp"], [data-key="ArrowDown"], [data-key="ArrowLeft"], [data-key="ArrowRight"] {
+          display: none !important;
+        }
+      }
+    `;
+    document.head.appendChild(hiddenDpadStyle);
+    // Ẩn thêm các button chỉ chứa ký tự mũi tên ◀ ▲ ▼ ▶ nếu không dùng class chuẩn
+    document.querySelectorAll('button, .btn, [role="button"]').forEach(el => {
+      const txt = (el.textContent || '').trim();
+      if(['◀','▲','▼','▶','⬅','⬆','⬇','➡'].includes(txt)){
+        el.dataset.lrHiddenDpad = el.style.display || '';
+        el.style.display = 'none';
+      }
+    });
+  }
+
+  function restoreDOMFourButtons(){
+    if(hiddenDpadStyle){
+      hiddenDpadStyle.remove();
+      hiddenDpadStyle = null;
+    }
+    document.querySelectorAll('[data-lr-hidden-dpad]').forEach(el => {
+      el.style.display = el.dataset.lrHiddenDpad;
+      delete el.dataset.lrHiddenDpad;
+    });
   }
 
   function clampIn(e, rad){
@@ -122,6 +268,7 @@ const mod = (function(){
     clock = 0; left = TIME; caught = 0; misses = 0; done = false; shake = 0;
     pops = []; bits = []; ripples = []; eggs = []; rings = [];
     aim = null; stackMul = 1;
+    resetJoy();
     P = {
       x:(arena.x0+arena.x1)/2, y:arena.y1 - 50*u, r:14*u,
       dir:-Math.PI/2, face:1, walk:0, diveT:0, diveCd:0, stun:0, hit:false,
@@ -131,14 +278,34 @@ const mod = (function(){
     spawnAll();
     addPop(W/2, G.top + 60*u, 'Bắt ' + N_TOTAL + ' con gà!', '#9d2118');
     hud();
+
+    hideDOMFourButtons();
+    const cv = ctx && ctx.canvas;
+    if(cv){
+      cv.addEventListener('touchstart', onTouchStart, {passive: false});
+      window.addEventListener('touchmove', onTouchMove, {passive: false});
+      window.addEventListener('touchend', onTouchEnd);
+      window.addEventListener('touchcancel', onTouchEnd);
+    }
   }
-  function exit(){}
+
+  function exit(){
+    restoreDOMFourButtons();
+    const cv = ctx && ctx.canvas;
+    if(cv){
+      cv.removeEventListener('touchstart', onTouchStart);
+    }
+    window.removeEventListener('touchmove', onTouchMove);
+    window.removeEventListener('touchend', onTouchEnd);
+    window.removeEventListener('touchcancel', onTouchEnd);
+    resetJoy();
+  }
 
   function spawnAll(){
     const aw = arena.x1 - arena.x0, ah = arena.y1 - arena.y0;
-    const types = ['rooster','hen','rooster','hen','hen'];
+    const types = ['rooster','hen','rooster','hen','hen','rooster','hen','rooster','hen','hen'];
     for(let i=0;i<N_TOTAL;i++){
-      const tp = types[i];
+      const tp = types[i % types.length];
       const fx = 0.12 + 0.76 * (i + 0.5) / N_TOTAL;
       const fy = 0.15 + Math.random() * 0.35;
       const c = {
@@ -200,18 +367,13 @@ const mod = (function(){
 
   /* ── GÀ MÁI ĐẺ TRỨNG ── */
   function layEgg(c){
-    // Không đẻ nếu quá nhiều trứng hoặc vị trí quá gần player
     if(eggs.length >= EGG_MAX) return;
-    // Đẻ phía sau gà (ngược hướng mặt)
     const behind = -c.face;
     for(let t = 0; t < 6; t++){
       const ex = c.x + behind * rnd(8, 20) * u + rnd(-4, 4) * u;
       const ey = c.y + rnd(6, 16) * u;
-      // Không đẻ đè vật cản
       if(!obs.every(o => Math.hypot(ex - o.x, ey - o.y) > o.r + EGG_R * u + 6 * u)) continue;
-      // Không đẻ quá gần player (tránh unfair)
       if(Math.hypot(ex - P.x, ey - P.y) < 30 * u) continue;
-      // Không đè trứng khác
       if(!eggs.every(e => Math.hypot(ex - e.x, ey - e.y) > e.r + EGG_R * u + 4 * u)) continue;
       eggs.push({ x: ex, y: ey, r: EGG_R * u, t: 0, life: EGG_LIFE, ph: rnd(0, TAU) });
       c.layFlash = 0.4;
@@ -227,7 +389,7 @@ const mod = (function(){
     for(const c of chickens){
       if(c.caught || c.tired > 0 || c.flyTimer > 0) continue;
       if(c.dodgeCd > 0) continue;
-      if(c.crowWindup > 0 || c.crowActive > 0) continue;   // đang gáy thì không né
+      if(c.crowWindup > 0 || c.crowActive > 0) continue;
       const dxc = c.x - P.x, dyc = c.y - P.y;
       const dc = Math.hypot(dxc, dyc);
       if(dc > DODGE_RANGE*u) continue;
@@ -255,7 +417,7 @@ const mod = (function(){
     Sound.sfx.dive();
   }
 
-  function pointerDown(x, y){
+  function triggerDiveAt(x, y){
     if(!P || P.stun > 0 || P.diveT > 0 || P.diveCd > 0 || P.crowFreeze > 0) return;
     const dx0 = x - P.x, dy0 = y - P.y;
     const near = (12*u)*(12*u);
@@ -282,6 +444,12 @@ const mod = (function(){
     ripples.push({x, y, t:0});
   }
 
+  function pointerDown(x, y){
+    // Không kích hoạt vồ gà nếu người chơi đang bấm vào vùng Joystick trên mobile
+    if(isMobile && Math.hypot(x - joy.cx, y - joy.cy) <= joy.r * 1.45) return;
+    triggerDiveAt(x, y);
+  }
+
   function updateChicken(c, dt){
     c.dodgeCd = Math.max(0, c.dodgeCd - dt);
     c.peckCd  = Math.max(0, c.peckCd  - dt);
@@ -293,14 +461,12 @@ const mod = (function(){
     if(c.type === 'rooster'){
       c.crowCd = Math.max(0, c.crowCd - dt);
 
-      // Đang trong hiệu ứng gáy → đứng yên
       if(c.crowActive > 0){
         c.crowActive -= dt;
         c.vx = 0; c.vy = 0;
         c.wingPhase += dt * 30;
         return;
       }
-      // Đang cảnh báo → đứng yên, chờ gáy
       if(c.crowWindup > 0){
         c.crowWindup -= dt;
         c.vx = 0; c.vy = 0;
@@ -311,7 +477,6 @@ const mod = (function(){
         }
         return;
       }
-      // Đủ điều kiện gáy? Chỉ gáy khi player trong tầm kích hoạt
       if(c.crowCd <= 0){
         const dp = Math.hypot(P.x - c.x, P.y - c.y);
         if(dp < CROW_RANGE * u * CROW_TRIGGER && P.crowFreeze <= 0){
@@ -328,12 +493,11 @@ const mod = (function(){
     if(c.type === 'hen'){
       c.eggCd = Math.max(0, c.eggCd - dt);
       if(c.eggCd <= 0 && c.flyTimer <= 0 && c.dodgeTimer <= 0 && !c.tired){
-        // Đẻ khi đang chạy hoặc đứng yên đều được, miễn không đang bay/né
         if(Math.hypot(c.vx, c.vy) < 120 * u || Math.random() < 0.6){
           layEgg(c);
           c.eggCd = rnd(EGG_CD_MIN, EGG_CD_MAX);
         } else {
-          c.eggCd = 0.3; // hoãn lại nếu đang bay nhanh
+          c.eggCd = 0.3;
         }
       }
     }
@@ -510,6 +674,14 @@ const mod = (function(){
     c.fleeing = fleeing;
   }
 
+  /* ── Lấy vector di chuyển kết hợp từ Joystick tròn & Bàn phím ── */
+  function getMoveVec(){
+    if(joy.active && joy.m > 0){
+      return { x: joy.vx * joy.m, y: joy.vy * joy.m, m: joy.m };
+    }
+    return Input.vec();
+  }
+
   function update(dt){
     clock += dt; left -= dt;
     const act = Input.consumeAct();
@@ -518,7 +690,7 @@ const mod = (function(){
     P.diveCd = Math.max(0, P.diveCd - dt);
     P.slowT  = Math.max(0, P.slowT - dt);
 
-    /* ── ĐẨY TỪ TRỨNG ── */
+    /* ── DẪM TRỨNG ── */
     for(let i = eggs.length - 1; i >= 0; i--){
       const e = eggs[i];
       if(Math.hypot(e.x - P.x, e.y - P.y) < e.r + P.r){
@@ -540,7 +712,6 @@ const mod = (function(){
 
     /* ── PLAYER UPDATE ── */
     if(P.crowFreeze > 0){
-      // Đứng hình do gáy — không làm gì cả
       P.crowFreeze -= dt;
       P.walk = 0;
     } else if(P.stun > 0){
@@ -573,7 +744,7 @@ const mod = (function(){
       chickens = chickens.filter(c=> !c.caught);
       if(caught >= N_TOTAL){ hud(); return win(); }
     } else {
-      const v = Input.vec();
+      const v = getMoveVec();
       const eggMul = P.slowT > 0 ? EGG_SLOW_MUL : 1;
       P.x += v.x * SP * u * eggMul * dt;
       P.y += v.y * SP * u * eggMul * dt;
@@ -656,7 +827,7 @@ const mod = (function(){
     ctx.fillStyle = '#7d5226';
     for(let x=x0; x<=x1; x+=26*u){
       ctx.fillRect(x-2*u, y0-th-3*u, 4*u, th+6*u);
-      ctx.fillRect(x-2*u, y1-3*u,   4*u, th+6*u);
+      ctx.fillRect(x-2*u, y1-3*u,    4*u, th+6*u);
     }
     for(let y=y0; y<=y1; y+=26*u){
       ctx.fillRect(x0-th-3*u, y-2*u, th+6*u, 4*u);
@@ -706,29 +877,23 @@ const mod = (function(){
     ctx.save();
     ctx.globalAlpha = Math.max(0.3, alpha);
 
-    // Shadow
     ctx.fillStyle = 'rgba(0,0,0,.18)';
     ctx.beginPath(); ctx.ellipse(e.x, e.y + 5*u, 7*u, 2.6*u, 0, 0, TAU); ctx.fill();
 
-    // Wobble nhẹ
     const wob = reduceMotion ? 0 : Math.sin(e.ph * 3) * 0.6 * u;
-
     ctx.translate(e.x, e.y + wob);
 
-    // Vỏ trứng
     ctx.fillStyle = '#f6efd8';
     ctx.strokeStyle = INK; ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.ellipse(0, 0, 7*u, 9*u, 0, 0, TAU);
     ctx.fill(); ctx.stroke();
 
-    // Điểm sáng
     ctx.fillStyle = 'rgba(255,255,255,.75)';
     ctx.beginPath();
     ctx.ellipse(-2*u, -2.5*u, 2.4*u, 3.2*u, -0.35, 0, TAU);
     ctx.fill();
 
-    // Sắp vỡ → vẽ vết nứt
     if(aboutExpire){
       ctx.strokeStyle = 'rgba(160, 60, 30, .75)'; ctx.lineWidth = 1.3;
       ctx.beginPath();
@@ -751,7 +916,6 @@ const mod = (function(){
 
     ctx.save(); ctx.translate(c.x + crowShake, c.y);
 
-    // Shadow
     ctx.save();
     if(flying){
       ctx.globalAlpha = 0.5 + 0.4 * Math.min(1, c.flyTimer/0.15);
@@ -777,7 +941,6 @@ const mod = (function(){
     ctx.lineWidth = 1.6; ctx.strokeStyle = INK; ctx.lineJoin = 'round';
     const rooster = c.type === 'rooster';
 
-    // Cánh sau khi bay
     if(flying){
       const flap = Math.sin(c.wingPhase);
       ctx.save();
@@ -790,7 +953,6 @@ const mod = (function(){
       ctx.restore();
     }
 
-    // Đuôi
     if(rooster){
       const cols = ['#2f7d57','#c8352b','#e6b422'];
       for(let i=0;i<3;i++){
@@ -809,7 +971,6 @@ const mod = (function(){
       ctx.fill(); ctx.stroke();
     }
 
-    // Chân (co khi bay, run bình thường)
     const sw = run && !flying ? Math.sin(clock*(c.burst > 0 ? 34 : 22) + c.ph)*5 : 0;
     ctx.strokeStyle = '#c98a1a'; ctx.lineWidth = 2;
     if(flying){
@@ -825,18 +986,15 @@ const mod = (function(){
     }
     ctx.strokeStyle = INK; ctx.lineWidth = 1.6;
 
-    // Thân
     ctx.fillStyle = rooster ? '#d9692a' : '#f6ecd0';
     ctx.beginPath(); ctx.ellipse(0, 0, 12, 9, 0, 0, TAU); ctx.fill(); ctx.stroke();
     ctx.fillStyle = rooster ? '#a8431a' : '#e3cf9a';
     ctx.beginPath(); ctx.ellipse(-2, 1, 7, 5, -.2, 0, TAU); ctx.fill(); ctx.stroke();
 
-    // Đầu — khi gáy thì ngẩng cao
     const headUp = (crowing || warning) ? -3 : 0;
     ctx.fillStyle = rooster ? '#d9692a' : '#f6ecd0';
     ctx.beginPath(); ctx.arc(11, -7 + headUp, 5.5, 0, TAU); ctx.fill(); ctx.stroke();
 
-    // Mào
     ctx.fillStyle = '#c8352b';
     for(let i=0;i<3;i++){
       ctx.beginPath();
@@ -844,7 +1002,6 @@ const mod = (function(){
       ctx.fill(); ctx.stroke();
     }
 
-    // Mỏ — gáy thì mở to
     ctx.fillStyle = '#e6b422';
     const open = crowing ? 6 : (warning ? 4 : (c.tired > 0 ? 3 : (c.angry > 0 ? 4 : 0)));
     ctx.beginPath();
@@ -853,22 +1010,18 @@ const mod = (function(){
     ctx.lineTo(15.5, -6 + open + headUp);
     ctx.closePath(); ctx.fill(); ctx.stroke();
 
-    // Yếm & mắt
     ctx.fillStyle = '#c8352b';
     ctx.beginPath(); ctx.ellipse(14.2, -3 + headUp, 1.8, 2.6, 0, 0, TAU); ctx.fill();
     ctx.fillStyle = INK;
     if(crowing){
-      // Mắt nhắm khi gáy
       ctx.strokeStyle = INK; ctx.lineWidth = 1.6;
       ctx.beginPath();
       ctx.moveTo(11.5, -8 + headUp); ctx.lineTo(13.5, -8 + headUp);
       ctx.stroke();
-      ctx.strokeStyle = INK; ctx.lineWidth = 1.6;
     } else {
       ctx.beginPath(); ctx.arc(12.5, -8 + headUp, 1.2, 0, TAU); ctx.fill();
     }
 
-    // Lông mày giận
     if(c.angry > 0 || (rooster && c.peckTimer > PECK_DELAY*0.5)){
       ctx.strokeStyle = '#8a1a10'; ctx.lineWidth = 2;
       ctx.beginPath();
@@ -876,7 +1029,6 @@ const mod = (function(){
       ctx.stroke();
     }
 
-    // Cánh gần khi bay
     if(flying){
       const flap = Math.sin(c.wingPhase);
       ctx.save();
@@ -898,7 +1050,6 @@ const mod = (function(){
       ctx.strokeStyle = INK; ctx.lineWidth = 1.6;
     }
 
-    // Flash khi đẻ trứng
     if(c.layFlash > 0){
       ctx.save();
       ctx.globalAlpha = c.layFlash / 0.4 * 0.7;
@@ -909,7 +1060,6 @@ const mod = (function(){
 
     ctx.restore();
 
-    // ── Hiệu ứng CẢNH BÁO GÁY (!!! đỏ nhấp nháy trên đầu) ──
     if(warning){
       ctx.save();
       ctx.globalAlpha = 0.55 + 0.45 * Math.sin(clock * 30);
@@ -922,7 +1072,6 @@ const mod = (function(){
       ctx.restore();
     }
 
-    // ── Hiệu ứng ĐANG GÁY (vòng đỏ tỏa ra quanh đầu) ──
     if(crowing){
       ctx.save();
       const kk = 1 - c.crowActive / CROW_ACTIVE;
@@ -932,7 +1081,6 @@ const mod = (function(){
       ctx.restore();
     }
 
-    // ── Dấu "!" báo sắp mổ (gà trống, ưu tiên thấp hơn gáy) ──
     if(rooster && !flying && !warning && !crowing && c.peckTimer > PECK_DELAY*0.5 && c.peckCd <= 0){
       ctx.save();
       ctx.globalAlpha = 0.6 + 0.4*Math.sin(clock*20);
@@ -944,7 +1092,6 @@ const mod = (function(){
       ctx.restore();
     }
 
-    // Giọt mồ hôi khi mệt
     if(c.tired > 0 && !flying){
       ctx.save();
       ctx.translate(c.x + c.face*14*u, c.y - 20*u + Math.sin(clock*8)*2*u);
@@ -983,7 +1130,6 @@ const mod = (function(){
     const slow = p.slowT > 0;
 
     ctx.save();
-    // Player bị đứng hình → rung lắc
     if(frozen && !reduceMotion){
       ctx.translate(p.x + rnd(-1,1)*1.6*u, p.y);
     } else {
@@ -993,7 +1139,6 @@ const mod = (function(){
     ctx.fillStyle = 'rgba(0,0,0,.2)';
     ctx.beginPath(); ctx.ellipse(0, 18*u, 15*u, 5*u, 0, 0, TAU); ctx.fill();
 
-    // Vòng chỉ báo trạng thái
     if(frozen){
       ctx.save();
       ctx.globalAlpha = 0.55 + 0.45 * Math.sin(clock * 24);
@@ -1017,16 +1162,13 @@ const mod = (function(){
     ctx.lineWidth = 2; ctx.strokeStyle = INK; ctx.lineJoin = 'round';
 
     if(frozen){
-      // Tư thế đứng hình: che tai, mắt nhắm chặt
       ctx.scale(u*p.face, u);
-      // Chân đứng yên
       ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.lineCap = 'round';
       ctx.beginPath();
       ctx.moveTo(-4,10); ctx.lineTo(-4,19);
       ctx.moveTo(4,10);  ctx.lineTo(4,19);
       ctx.stroke();
       ctx.lineWidth = 2;
-      // Thân
       ctx.fillStyle = '#c8352b';
       ctx.beginPath();
       ctx.moveTo(-8,-6); ctx.lineTo(8,-6); ctx.lineTo(11,14); ctx.lineTo(-11,14);
@@ -1035,25 +1177,21 @@ const mod = (function(){
       for(let i=0;i<3;i++){
         ctx.beginPath(); ctx.arc(0, -2 + i*5, 1.4, 0, TAU); ctx.fill();
       }
-      // Hai tay che tai
       ctx.strokeStyle = '#f0c48f'; ctx.lineWidth = 3.5;
       ctx.beginPath();
       ctx.moveTo(-6,-6); ctx.lineTo(-14,-18);
       ctx.moveTo(6,-6);  ctx.lineTo(14,-18);
       ctx.stroke();
-      // Đầu
       ctx.strokeStyle = INK; ctx.lineWidth = 2;
       ctx.fillStyle = '#f0c48f';
       ctx.beginPath(); ctx.arc(0, -13, 7, 0, TAU); ctx.fill(); ctx.stroke();
       ctx.fillStyle = INK; rrect(-7,-24,16,8,3); ctx.fill();
       ctx.fillStyle = '#e6b422'; ctx.fillRect(-7,-17,16,2);
-      // Mắt nhắm
       ctx.strokeStyle = INK; ctx.lineWidth = 1.8;
       ctx.beginPath();
       ctx.moveTo(-3, -13); ctx.lineTo(-1, -13);
       ctx.moveTo(1, -13);  ctx.lineTo(3, -13);
       ctx.stroke();
-      // Miệng chữ O
       ctx.beginPath(); ctx.arc(2, -9, 1.8, 0, TAU); ctx.stroke();
     } else if(p.stun > 0){
       ctx.scale(u*p.face, u);
@@ -1094,7 +1232,7 @@ const mod = (function(){
       ctx.stroke();
     } else {
       ctx.scale(u*p.face, u);
-      const moving = Input.vec().m;
+      const moving = getMoveVec().m;
       const walkSpd = slow ? 0.5 : 1;
       const sw = moving ? Math.sin(p.walk) * 6 * walkSpd : 0;
       ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.lineCap = 'round';
@@ -1123,7 +1261,6 @@ const mod = (function(){
     }
     ctx.restore();
 
-    // Icon "!" trên đầu player khi bị đứng hình
     if(frozen){
       ctx.save();
       ctx.globalAlpha = 0.6 + 0.4 * Math.sin(clock * 24);
@@ -1135,7 +1272,6 @@ const mod = (function(){
       ctx.restore();
     }
 
-    // Icon "trứng" trên đầu player khi bị chậm
     if(slow && !frozen){
       ctx.save();
       ctx.globalAlpha = 0.75 + 0.25 * Math.sin(clock * 10);
@@ -1146,6 +1282,57 @@ const mod = (function(){
       ctx.fillText('SLOW', p.x, p.y - 36*u);
       ctx.restore();
     }
+  }
+
+  /* ── Vẽ cụm nút di chuyển dạng tròn (Joystick) trên Mobile ── */
+  function drawJoystick(){
+    if(!isMobile) return;
+    ctx.save();
+    ctx.globalAlpha = joy.active ? 0.88 : 0.48;
+
+    // Vòng tròn đế lớn
+    ctx.fillStyle = 'rgba(60, 40, 20, 0.28)';
+    ctx.strokeStyle = 'rgba(255, 245, 220, 0.85)';
+    ctx.lineWidth = 2.5 * u;
+    ctx.beginPath();
+    ctx.arc(joy.cx, joy.cy, joy.r, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+
+    // Vòng tròn rãnh bên trong
+    ctx.strokeStyle = 'rgba(255, 245, 220, 0.3)';
+    ctx.lineWidth = 1.5 * u;
+    ctx.beginPath();
+    ctx.arc(joy.cx, joy.cy, joy.r * 0.62, 0, TAU);
+    ctx.stroke();
+
+    // 4 chấm định hướng nhỏ trên vành
+    ctx.fillStyle = 'rgba(255, 245, 220, 0.6)';
+    for(let i = 0; i < 4; i++){
+      const a = i * Math.PI / 2;
+      const dx = Math.cos(a) * (joy.r - 7 * u);
+      const dy = Math.sin(a) * (joy.r - 7 * u);
+      ctx.beginPath();
+      ctx.arc(joy.cx + dx, joy.cy + dy, 2.2 * u, 0, TAU);
+      ctx.fill();
+    }
+
+    // Núm gạt tròn ở tâm / theo ngón tay
+    ctx.fillStyle = joy.active ? '#c8352b' : '#e6b422';
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2.2 * u;
+    ctx.beginPath();
+    ctx.arc(joy.x, joy.y, joy.knobR, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+
+    // Điểm bóng sáng trên núm tròn
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+    ctx.beginPath();
+    ctx.arc(joy.x - 5 * u, joy.y - 5 * u, joy.knobR * 0.38, 0, TAU);
+    ctx.fill();
+
+    ctx.restore();
   }
 
   function rrect(x,y,w,h,r){
@@ -1191,7 +1378,6 @@ const mod = (function(){
     }
     drawGround();
 
-    // Trứng vẽ TRƯỚC để chìm dưới chân gà/player
     for(const e of eggs) drawEgg(e);
 
     const list = [];
@@ -1200,7 +1386,6 @@ const mod = (function(){
     list.push({y:P.y, f:drawPlayer});
     list.sort((a,b)=> a.y - b.y).forEach(i=> i.f());
 
-    // Ring gáy vẽ TRÊN TẤT CẢ (trừ khi nằm dưới đất thì giữ)
     for(const r of rings) drawCrowRing(r);
 
     for(const b of bits){
@@ -1217,6 +1402,9 @@ const mod = (function(){
     for(const q of pops)    drawPop(q);
 
     ctx.restore();
+
+    // Vẽ Joystick tròn ngoài cùng để không bị rung theo hiệu ứng camera shake
+    drawJoystick();
   }
 
   return {enter, exit, update, draw, resize, pointerDown};
@@ -1227,7 +1415,7 @@ LR.level('ch1', {
   title: 'Gà', status: 'ready', pad: true,
   desc: 'Bắt đủ con gà trong vườn để làm mâm cỗ!',
   rules: [
-    '<b>Di chuyển:</b> mũi tên / WASD, hoặc nút ◀ ▲ ▼ ▶ trên màn hình.',
+    '<b>Di chuyển:</b> mũi tên / WASD, hoặc xoay nút tròn (Joystick) trên màn hình cảm ứng.',
     '<b>Vồ gà:</b> Space / Z / nút VỒ — hoặc chạm vào sân (chạm gần gà sẽ tự nhắm).',
     '<b>Vồ trượt:</b> choáng 0,9s và trừ 3s.',
     '<b>Gà né dai:</b> xác suất né cao — hãy đón đầu, đừng vồ thẳng.',
