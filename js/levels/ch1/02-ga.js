@@ -1,7 +1,7 @@
 /* Chương 1 · Ải 2: Gà — bản khó đầy đủ (10 gà, 1 đợt)
    Cơ chế: gà né dive · gà trống phản công · stack tốc độ · gà bay
    MỚI: gà trống gáy (làm player đứng hình) · gà mái đẻ trứng (dẫm phải bị chậm)
-   UPDATE: Floating Joystick tròn 360° cho giao diện Mobile (chạm nửa trái màn hình để hiện tâm) */
+   UPDATE: Floating Joystick bên trái + Nút VỒ tròn bên phải cho giao diện Mobile */
 (function(){
 'use strict';
 const LR = window.LR;
@@ -11,7 +11,7 @@ const {rnd, clamp, TAU, INK} = LR.util;
 const mod = (function(){
   /* ── Độ khó ── */
   const N_TOTAL   = 10;
-  const TIME      = 30;
+  const TIME      = 90;
   const SP        = 185;
   const DIVE_SP   = 510;
   const DIVE_T    = 0.22;
@@ -67,7 +67,7 @@ const mod = (function(){
   let eggs = [], rings = [];
   let aim = null, stackMul = 1;
 
-  /* ── Floating Joystick cho Mobile ── */
+  /* ── Floating Joystick (Trái) & Nút VỒ (Phải) cho Mobile ── */
   let isMobile = false;
   const joy = {
     active: false, id: null,
@@ -76,7 +76,11 @@ const mod = (function(){
     vx: 0, vy: 0, m: 0,
     usedOnce: false
   };
-  let hiddenDpadStyle = null;
+  const diveBtn = {
+    x: 0, y: 0, r: 38,
+    pressed: false, id: null
+  };
+  let customMobileStyle = null;
 
   const OBS_DEF = [
     {fx:.2,  fy:.26, r:32, t:'hay'},
@@ -110,9 +114,14 @@ const mod = (function(){
       s:rnd(.7,1.3), c:Math.random()<.6?'#6e9a54':'#b99a55'
     });
 
-    /* Kích thước Floating Joystick */
+    /* Kích thước Floating Joystick bên trái */
     joy.r = 48 * u;
     joy.knobR = 21 * u;
+
+    /* Định vị nút VỒ ở góc dưới bên phải */
+    diveBtn.r = 38 * u;
+    diveBtn.x = arena.x1 - diveBtn.r - 20 * u;
+    diveBtn.y = arena.y1 - diveBtn.r - 22 * u;
 
     if(P){
       clampIn(P, 14*u);
@@ -120,7 +129,7 @@ const mod = (function(){
     }
   }
 
-  /* ── Xử lý Multi-touch cho Floating Joystick & Chạm vồ gà ── */
+  /* ── Xử lý Multi-touch cho Floating Joystick (Trái) & Nút VỒ (Phải) ── */
   function getCanvasPos(touch){
     const cv = ctx && ctx.canvas;
     if(!cv) return {x: touch.clientX, y: touch.clientY};
@@ -132,14 +141,18 @@ const mod = (function(){
   }
 
   function isLeftHalfZone(px, py){
-    return py >= arena.y0 && px <= W * 0.52;
+    return py >= arena.y0 && px <= W * 0.50;
+  }
+
+  function isOnDiveBtn(px, py){
+    return Math.hypot(px - diveBtn.x, py - diveBtn.y) <= diveBtn.r * 1.3;
   }
 
   function updateJoyKnob(px, py){
     const dx = px - joy.cx, dy = py - joy.cy;
     const dist = Math.hypot(dx, dy);
     const maxD = joy.r;
-    if(dist > 4 * u){ // Vùng chết (deadzone) nhẹ
+    if(dist > 4 * u){
       const clamped = Math.min(dist, maxD);
       const ang = Math.atan2(dy, dx);
       joy.x = joy.cx + Math.cos(ang) * clamped;
@@ -161,25 +174,55 @@ const mod = (function(){
     joy.m = 0;
   }
 
+  /* Vồ theo hướng mặt/di chuyển hiện tại (có hỗ trợ tự khóa mục tiêu ở gần trước mặt) */
+  function triggerButtonDive(){
+    if(!P || P.stun > 0 || P.diveT > 0 || P.diveCd > 0 || P.crowFreeze > 0) return;
+    let bestAng = P.dir;
+    let bestD = Infinity;
+    const assistR = 125 * u;
+    for(const c of chickens){
+      if(c.caught) continue;
+      const dx = c.x - P.x, dy = c.y - P.y;
+      const d = Math.hypot(dx, dy);
+      if(d < assistR){
+        const ang = Math.atan2(dy, dx);
+        if(Math.abs(normAngle(ang - P.dir)) < 0.85 && d < bestD){
+          bestD = d;
+          const lead = 0.08;
+          bestAng = Math.atan2((c.y + c.vy * lead) - P.y, (c.x + c.vx * lead) - P.x);
+        }
+      }
+    }
+    aim = bestAng;
+  }
+
   function onTouchStart(e){
     if(!isMobile || done || !P) return;
     for(let i = 0; i < e.changedTouches.length; i++){
       const t = e.changedTouches[i];
       const pos = getCanvasPos(t);
 
-      // Nếu chưa kích hoạt Joystick và chạm vào nửa trái màn hình -> đặt tâm Joystick tại điểm chạm
+      // 1. Kiểm tra nếu bấm vào nút VỒ bên phải
+      if(isOnDiveBtn(pos.x, pos.y)){
+        diveBtn.pressed = true;
+        diveBtn.id = t.identifier;
+        triggerButtonDive();
+        if(e.cancelable) e.preventDefault();
+        continue;
+      }
+
+      // 2. Nếu chạm vào nửa trái màn hình -> đặt tâm Floating Joystick
       if(!joy.active && isLeftHalfZone(pos.x, pos.y)){
         joy.active = true;
         joy.usedOnce = true;
         joy.id = t.identifier;
-        // Giữ tâm không bị tràn ra ngoài viền sân
         const pad = joy.r + 6 * u;
-        joy.cx = clamp(pos.x, arena.x0 + pad, W * 0.55);
+        joy.cx = clamp(pos.x, arena.x0 + pad, W * 0.48);
         joy.cy = clamp(pos.y, arena.y0 + pad, arena.y1 - pad);
         updateJoyKnob(pos.x, pos.y);
         if(e.cancelable) e.preventDefault();
       } else {
-        // Chạm vào nửa phải màn hình (hoặc ngón thứ 2 khi đang giữ Joystick) -> Vồ gà
+        // 3. Chạm vào vùng sân bên phải ngoài nút VỒ -> Vồ thẳng tới điểm chạm
         if(pos.y >= arena.y0 && pos.y <= arena.y1){
           triggerDiveAt(pos.x, pos.y);
           if(e.cancelable) e.preventDefault();
@@ -202,45 +245,53 @@ const mod = (function(){
   }
 
   function onTouchEnd(e){
-    if(!joy.active) return;
     for(let i = 0; i < e.changedTouches.length; i++){
-      if(e.changedTouches[i].identifier === joy.id){
+      const id = e.changedTouches[i].identifier;
+      if(joy.active && id === joy.id){
         resetJoy();
-        break;
+      }
+      if(diveBtn.pressed && id === diveBtn.id){
+        diveBtn.pressed = false;
+        diveBtn.id = null;
       }
     }
   }
 
-  function hideDOMFourButtons(){
-    if(!isMobile || hiddenDpadStyle) return;
-    hiddenDpadStyle = document.createElement('style');
-    /* Ẩn các nút mũi tên 4 hướng của DOM trên mobile nhưng giữ lại nút hành động (VỒ) */
-    hiddenDpadStyle.textContent = `
+  function setupMobileControlsDOM(){
+    if(!isMobile || customMobileStyle) return;
+    customMobileStyle = document.createElement('style');
+    /* Ẩn cụm D-pad 4 nút và đẩy nút VỒ DOM (nếu có) sang phải, hoặc ẩn để dùng nút VỒ trên Canvas */
+    customMobileStyle.textContent = `
       @media (max-width: 820px), (pointer: coarse) {
         .dpad, .pad-dirs, .dir-pad, #dpad,
         [data-dir], [data-key="ArrowUp"], [data-key="ArrowDown"], [data-key="ArrowLeft"], [data-key="ArrowRight"] {
           display: none !important;
         }
+        .pad, #pad, .controls, .touch-controls {
+          justify-content: flex-end !important;
+        }
       }
     `;
-    document.head.appendChild(hiddenDpadStyle);
+    document.head.appendChild(customMobileStyle);
+
+    // Ẩn các nút mũi tên và nút VỒ DOM cũ trên mobile để dùng bộ nút Canvas đồng bộ
     document.querySelectorAll('button, .btn, [role="button"]').forEach(el => {
-      const txt = (el.textContent || '').trim();
-      if(['◀','▲','▼','▶','⬅','⬆','⬇','➡'].includes(txt)){
-        el.dataset.lrHiddenDpad = el.style.display || '';
+      const txt = (el.textContent || '').trim().toUpperCase();
+      if(['◀','▲','▼','▶','⬅','⬆','⬇','➡','VỒ','VO'].includes(txt)){
+        el.dataset.lrHiddenBtn = el.style.display || '';
         el.style.display = 'none';
       }
     });
   }
 
-  function restoreDOMFourButtons(){
-    if(hiddenDpadStyle){
-      hiddenDpadStyle.remove();
-      hiddenDpadStyle = null;
+  function restoreMobileControlsDOM(){
+    if(customMobileStyle){
+      customMobileStyle.remove();
+      customMobileStyle = null;
     }
-    document.querySelectorAll('[data-lr-hidden-dpad]').forEach(el => {
-      el.style.display = el.dataset.lrHiddenDpad;
-      delete el.dataset.lrHiddenDpad;
+    document.querySelectorAll('[data-lr-hidden-btn]').forEach(el => {
+      el.style.display = el.dataset.lrHiddenBtn;
+      delete el.dataset.lrHiddenBtn;
     });
   }
 
@@ -271,6 +322,7 @@ const mod = (function(){
     pops = []; bits = []; ripples = []; eggs = []; rings = [];
     aim = null; stackMul = 1;
     joy.usedOnce = false;
+    diveBtn.pressed = false; diveBtn.id = null;
     resetJoy();
     P = {
       x:(arena.x0+arena.x1)/2, y:arena.y1 - 50*u, r:14*u,
@@ -282,7 +334,7 @@ const mod = (function(){
     addPop(W/2, G.top + 60*u, 'Bắt ' + N_TOTAL + ' con gà!', '#9d2118');
     hud();
 
-    hideDOMFourButtons();
+    setupMobileControlsDOM();
     const cv = ctx && ctx.canvas;
     if(cv){
       cv.addEventListener('touchstart', onTouchStart, {passive: false});
@@ -293,7 +345,7 @@ const mod = (function(){
   }
 
   function exit(){
-    restoreDOMFourButtons();
+    restoreMobileControlsDOM();
     const cv = ctx && ctx.canvas;
     if(cv){
       cv.removeEventListener('touchstart', onTouchStart);
@@ -302,6 +354,7 @@ const mod = (function(){
     window.removeEventListener('touchend', onTouchEnd);
     window.removeEventListener('touchcancel', onTouchEnd);
     resetJoy();
+    diveBtn.pressed = false; diveBtn.id = null;
   }
 
   function spawnAll(){
@@ -448,8 +501,14 @@ const mod = (function(){
   }
 
   function pointerDown(x, y){
-    // Trên mobile, sự kiện chạm ở nửa trái được dành cho Floating Joystick
-    if(isMobile && isLeftHalfZone(x, y)) return;
+    if(isMobile){
+      // Trên mobile, sự kiện touch đã được xử lý riêng qua Multi-touch (onTouchStart)
+      if(isOnDiveBtn(x, y)){
+        triggerButtonDive();
+        return;
+      }
+      if(isLeftHalfZone(x, y)) return;
+    }
     triggerDiveAt(x, y);
   }
 
@@ -758,7 +817,7 @@ const mod = (function(){
       }
       pushOut(P, P.r);
       if(aim !== null){ tryDive(aim); aim = null; }
-      else if(act) tryDive(P.dir);
+      else if(act) triggerButtonDive(), (aim !== null && (tryDive(aim), aim = null));
     }
 
     for(const c of chickens) updateChicken(c, dt);
@@ -1287,11 +1346,63 @@ const mod = (function(){
     }
   }
 
-  /* ── Vẽ Floating Joystick trên Mobile ── */
-  function drawJoystick(){
+  /* ── Vẽ Floating Joystick (Trái) & Nút VỒ (Phải) trên Mobile ── */
+  function drawMobileControls(){
     if(!isMobile) return;
 
-    // Gợi ý mờ ở góc dưới trái trong 4 giây đầu nếu người chơi chưa chạm thử
+    /* 1. Vẽ nút VỒ ở góc dưới bên phải */
+    ctx.save();
+    const disabled = P && (P.stun > 0 || P.crowFreeze > 0 || P.diveCd > 0 || P.diveT > 0);
+    const scale = diveBtn.pressed ? 0.92 : 1.0;
+
+    ctx.translate(diveBtn.x, diveBtn.y);
+    ctx.scale(scale, scale);
+
+    // Đổ bóng nút VỒ
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+    ctx.beginPath();
+    ctx.arc(0, 4 * u, diveBtn.r, 0, TAU);
+    ctx.fill();
+
+    // Nền nút VỒ
+    ctx.globalAlpha = disabled ? 0.45 : 0.88;
+    ctx.fillStyle = diveBtn.pressed ? '#9d2118' : '#c8352b';
+    ctx.strokeStyle = '#f6efd8';
+    ctx.lineWidth = 3 * u;
+    ctx.beginPath();
+    ctx.arc(0, 0, diveBtn.r, 0, TAU);
+    ctx.fill();
+    ctx.stroke();
+
+    // Vòng trong trang trí
+    ctx.strokeStyle = 'rgba(230, 180, 34, 0.65)';
+    ctx.lineWidth = 1.8 * u;
+    ctx.beginPath();
+    ctx.arc(0, 0, diveBtn.r * 0.82, 0, TAU);
+    ctx.stroke();
+
+    // Vòng hồi chiêu nếu đang cooldown
+    if(P && P.diveCd > 0){
+      const cdRatio = clamp(P.diveCd / DIVE_CD, 0, 1);
+      ctx.strokeStyle = '#e6b422';
+      ctx.lineWidth = 4 * u;
+      ctx.beginPath();
+      ctx.arc(0, 0, diveBtn.r, -Math.PI/2, -Math.PI/2 + TAU * (1 - cdRatio));
+      ctx.stroke();
+    }
+
+    // Chữ "VỒ"
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 3 * u;
+    ctx.font = '900 ' + Math.round(18 * u) + 'px "Be Vietnam Pro", system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.strokeText('VỒ', 0, 1 * u);
+    ctx.fillText('VỒ', 0, 1 * u);
+    ctx.restore();
+
+    /* 2. Vẽ Floating Joystick ở nửa bên trái */
     if(!joy.active){
       if(!joy.usedOnce && clock < 4.0){
         const hx = arena.x0 + joy.r + 18 * u;
@@ -1315,7 +1426,7 @@ const mod = (function(){
     ctx.save();
     ctx.globalAlpha = 0.88;
 
-    // Vòng tròn đế lớn xuất hiện tại điểm chạm
+    // Vòng tròn đế lớn xuất hiện tại điểm chạm bên trái
     ctx.fillStyle = 'rgba(60, 40, 20, 0.28)';
     ctx.strokeStyle = 'rgba(255, 245, 220, 0.85)';
     ctx.lineWidth = 2.5 * u;
@@ -1436,8 +1547,8 @@ const mod = (function(){
 
     ctx.restore();
 
-    // Vẽ Floating Joystick ngoài cùng để không bị rung khi có hiệu ứng shake
-    drawJoystick();
+    // Vẽ Floating Joystick (Trái) & Nút VỒ (Phải) ngoài cùng để cố định khi camera rung
+    drawMobileControls();
   }
 
   return {enter, exit, update, draw, resize, pointerDown};
@@ -1448,8 +1559,8 @@ LR.level('ch1', {
   title: 'Gà', status: 'ready', pad: true,
   desc: 'Bắt đủ con gà trong vườn để làm mâm cỗ!',
   rules: [
-    '<b>Di chuyển:</b> mũi tên / WASD, hoặc chạm giữ bất kỳ đâu ở nửa trái màn hình để xoay Joystick tròn.',
-    '<b>Vồ gà:</b> Space / Z / nút VỒ — hoặc chạm vào nửa phải sân (chạm gần gà sẽ tự nhắm).',
+    '<b>Di chuyển:</b> mũi tên / WASD, hoặc chạm giữ nửa trái màn hình để xoay Joystick tròn.',
+    '<b>Vồ gà:</b> Space / Z / nút <b>VỒ</b> ở góc phải — hoặc chạm trực tiếp vào nửa phải sân.',
     '<b>Vồ trượt:</b> choáng 0,9s và trừ 3s.',
     '<b>Gà né dai:</b> xác suất né cao — hãy đón đầu, đừng vồ thẳng.',
     '<b>Gà vỗ cánh bay:</b> khi bị dồn sát, gà bay xa ~250px. Đợi nó hạ cánh rồi hãy vồ!',
