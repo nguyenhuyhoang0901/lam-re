@@ -15,14 +15,52 @@ const PHYSICS = {
   edgeSnapTolerance: 13
 };
 const BASE_STONE_WIDTH = 90;
-// Điểm cần đạt để "thắng ải" (chỉ kiểm tra khi thua, KHÔNG hiện trong HUD)
-const WIN_SCORE = 10;
+const WIN_SCORE = 10;   // chỉ dùng để chấm "qua ải" khi rơi — KHÔNG hiện trong HUD
 
 let gs = null, player = null;
 let stones = [], particles = [], floatingTexts = [], clouds = [];
 let orientationOverlay = null;
 
-/* ---- orientation ---- */
+/* ---- Charge sound: oscillator LIÊN TỤC (giống bản gốc) ---- */
+let chargeOsc = null, chargeGain = null;
+
+function startChargeSound() {
+  stopChargeSound();
+  try {
+    Sound.init();
+    const a = Sound.audio();
+    if (!a) return;
+    chargeOsc = a.ctx.createOscillator();
+    chargeGain = a.ctx.createGain();
+    chargeOsc.type = 'triangle';
+    chargeOsc.frequency.setValueAtTime(180, a.ctx.currentTime);
+    chargeGain.gain.setValueAtTime(0.0001, a.ctx.currentTime);
+    chargeGain.gain.exponentialRampToValueAtTime(0.06, a.ctx.currentTime + 0.05);
+    chargeOsc.connect(chargeGain);
+    chargeGain.connect(a.out);
+    chargeOsc.start();
+  } catch(e) { chargeOsc = null; chargeGain = null; }
+}
+function updateChargeSound(ratio) {
+  if (!chargeOsc) return;
+  try {
+    const a = Sound.audio();
+    if (!a) return;
+    chargeOsc.frequency.setTargetAtTime(180 + ratio * 480, a.ctx.currentTime, 0.02);
+  } catch(e) {}
+}
+function stopChargeSound() {
+  if (chargeOsc) {
+    try { chargeOsc.stop(); chargeOsc.disconnect(); } catch(e) {}
+    chargeOsc = null;
+  }
+  if (chargeGain) {
+    try { chargeGain.disconnect(); } catch(e) {}
+    chargeGain = null;
+  }
+}
+
+/* ---- Orientation ---- */
 function isPortraitNarrow() {
   return window.innerHeight > window.innerWidth && window.innerWidth < 900;
 }
@@ -35,8 +73,7 @@ function createOrientationOverlay() {
     'display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;' +
     'text-align:center;color:#f8fafc;font-family:\'Be Vietnam Pro\',sans-serif;">' +
       '<div style="width:76px;height:76px;margin-bottom:20px;border-radius:18px;background:#0f172a;' +
-      'border:1px solid #1e293b;display:flex;align-items:center;justify-content:center;' +
-      'box-shadow:0 10px 30px rgba(0,0,0,0.6);">' +
+      'border:1px solid #1e293b;display:flex;align-items:center;justify-content:center;">' +
         '<svg width="36" height="36" fill="none" stroke="#22d3ee" stroke-width="2" viewBox="0 0 24 24" ' +
         'style="animation:lr14Rotate 2.5s ease-in-out infinite;">' +
           '<rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>' +
@@ -54,33 +91,27 @@ function updateOrientationOverlay() {
   orientationOverlay.style.display = isPortraitNarrow() ? 'block' : 'none';
 }
 function removeOrientationOverlay() {
-  if (orientationOverlay && orientationOverlay.parentNode) {
-    orientationOverlay.parentNode.removeChild(orientationOverlay);
-  }
+  if (orientationOverlay && orientationOverlay.parentNode) orientationOverlay.parentNode.removeChild(orientationOverlay);
   orientationOverlay = null;
 }
 
-/* ---- world ---- */
+/* ---- World ---- */
 function initClouds() {
   clouds = [];
   for (let i = 0; i < 10; i++) {
     clouds.push({
-      x: Math.random() * 1400,
-      y: 30 + Math.random() * 220,
-      w: 80 + Math.random() * 100,
-      speed: 6 + Math.random() * 12,
+      x: Math.random() * 1400, y: 30 + Math.random() * 220,
+      w: 80 + Math.random() * 100, speed: 6 + Math.random() * 12,
       alpha: 0.08 + Math.random() * 0.14
     });
   }
 }
-
 function getBaseGroundY() {
   const G = LR.G, h = G.H, top = G.top || 0;
   const minY = top + 80;
   const maxY = Math.max(minY, h - 60);
   return Math.max(minY, Math.min(maxY, h * 0.72));
 }
-
 function createStone(x, width, isFirst) {
   const baseY = getBaseGroundY();
   const yOffset = isFirst ? 0 : (Math.random() * 70 - 35);
@@ -91,28 +122,22 @@ function createStone(x, width, isFirst) {
     depressY: 0, crystalCollected: false
   };
 }
-
 function placePlayerOnStone(stone) {
   player.x = stone.x; player.y = stone.y;
-  player.vx = 0; player.vy = 0;
-  player.state = 'IDLE';
+  player.vx = 0; player.vy = 0; player.state = 'IDLE';
   player.chargeTime = 0;
-  player.scaleX = 1; player.scaleY = 1;
-  player.rotation = 0;
-  player.climbProgress = 0;
-  player.climbStartX = 0; player.climbTargetX = 0;
+  player.scaleX = 1; player.scaleY = 1; player.rotation = 0;
+  player.climbProgress = 0; player.climbStartX = 0; player.climbTargetX = 0;
 }
-
 function spawnNextStone() {
   const last = stones[stones.length - 1];
-  const minGap = 170, maxGap = 445;
-  const dist = minGap + Math.random() * (maxGap - minGap);
+  const dist = 170 + Math.random() * 275;
   stones.push(createStone(last.x + dist, 46 + Math.random() * 58, false));
   if (stones.length > 5) stones.shift();
 }
-
 function reset() {
-  gs = { score: 0, combo: 1, maxCombo: 1, cameraX: 0, targetCameraX: 0, time: 0, chargeSoundTimer: 0 };
+  stopChargeSound();
+  gs = { score: 0, combo: 1, maxCombo: 1, cameraX: 0, targetCameraX: 0, time: 0 };
   player = {
     x: 110, y: 0, vx: 0, vy: 0, state: 'IDLE',
     chargeTime: 0, chargeDir: 1,
@@ -127,9 +152,7 @@ function reset() {
   gs.targetCameraX = gs.cameraX;
   updateHUD();
 }
-
 function getChargeRatio() { return clamp(player.chargeTime / PHYSICS.maxChargeTime, 0, 1); }
-
 function calculateJumpVelocities(ratio) {
   const targetDist = PHYSICS.minJumpDist + ratio * (PHYSICS.maxJumpDist - PHYSICS.minJumpDist);
   const next = stones[1];
@@ -139,7 +162,6 @@ function calculateJumpVelocities(ratio) {
   const vy = (deltaY - 0.5 * PHYSICS.gravity * flightTime * flightTime) / flightTime;
   return { vx, vy, targetDist, flightTime };
 }
-
 function updateHUD() {
   LR.G.hud.set([
     { l: 'Điểm', v: gs.score },
@@ -147,16 +169,18 @@ function updateHUD() {
   ]);
 }
 
-/* ---- input ---- */
+/* ---- Input ---- */
 function startCharging() {
   if (isPortraitNarrow()) return;
   if (player.state !== 'IDLE') return;
+  Sound.init();               // ← FIX: đảm bảo AudioContext sẵn sàng cho bàn phím
   player.state = 'CHARGING';
   player.chargeTime = 0;
   player.chargeDir = 1;
-  gs.chargeSoundTimer = 0;
+  startChargeSound();         // ← FIX: bắt đầu oscillator liên tục
 }
 function releaseJump() {
+  stopChargeSound();          // ← FIX: tắt tiếng tích lực ngay lập tức
   if (player.state !== 'CHARGING') return;
   if (LR.G.state !== 'play' || isPortraitNarrow()) {
     player.state = 'IDLE';
@@ -167,8 +191,7 @@ function releaseJump() {
   }
   const ratio = getChargeRatio();
   const { vx, vy } = calculateJumpVelocities(ratio);
-  player.vx = vx; player.vy = vy;
-  player.state = 'JUMPING';
+  player.vx = vx; player.vy = vy; player.state = 'JUMPING';
   player.scaleX = 0.78; player.scaleY = 1.28;
   if (stones[0]) stones[0].depressY = 0;
   spawnParticles(player.x, player.y, '#38bdf8', 12, 120);
@@ -182,12 +205,14 @@ function onKeyUp(e) {
   if (e.code !== 'Space') return;
   e.preventDefault(); releaseJump();
 }
+function onVisibility() {
+  if (document.hidden) stopChargeSound();
+}
 
-/* ---- update ---- */
+/* ---- Update ---- */
 function update(dt) {
-  if (isPortraitNarrow()) return; // tạm đóng băng vật lý khi portrait
+  if (isPortraitNarrow()) return;
   gs.time += dt;
-
   clouds.forEach(c => {
     c.x -= c.speed * dt;
     if (c.x + c.w < 0) c.x = LR.G.W + 60;
@@ -214,11 +239,7 @@ function update(dt) {
       player.chargeTime = 0.05; player.chargeDir = 1;
     }
     const ratio = getChargeRatio();
-    gs.chargeSoundTimer += dt;
-    if (gs.chargeSoundTimer > 0.12) {
-      gs.chargeSoundTimer = 0;
-      Sound.tone('triangle', 300 + ratio * 500, 300 + ratio * 500, .04, .03);
-    }
+    updateChargeSound(ratio);   // ← FIX: pitch bám theo lực tích tụ mỗi frame
     player.scaleY = 1 - ratio * 0.36;
     player.scaleX = 1 + ratio * 0.28;
     stones[0].depressY = ratio * 9;
@@ -226,18 +247,14 @@ function update(dt) {
     if (Math.random() < 0.35 + ratio * 0.5) {
       const color = ratio > 0.75 ? '#f43f5e' : (ratio > 0.4 ? '#fbbf24' : '#38bdf8');
       particles.push({
-        x: player.x + (Math.random() - 0.5) * 34,
-        y: player.y - 2,
-        vx: (Math.random() - 0.5) * 30,
-        vy: -30 - Math.random() * 50,
-        radius: 2 + Math.random() * 2.5,
-        color, alpha: 1, life: 0.35
+        x: player.x + (Math.random() - 0.5) * 34, y: player.y - 2,
+        vx: (Math.random() - 0.5) * 30, vy: -30 - Math.random() * 50,
+        radius: 2 + Math.random() * 2.5, color, alpha: 1, life: 0.35
       });
     }
   } else if (player.state === 'JUMPING') {
     const prevY = player.y;
-    player.x += player.vx * dt;
-    player.y += player.vy * dt;
+    player.x += player.vx * dt; player.y += player.vy * dt;
     player.vy += PHYSICS.gravity * dt;
     player.scaleX += (1 - player.scaleX) * Math.min(1, dt * 8);
     player.scaleY += (1 - player.scaleY) * Math.min(1, dt * 8);
@@ -252,8 +269,7 @@ function update(dt) {
       player.y = stones[1].y + Math.sin((1 - player.climbProgress) * Math.PI) * 8;
     }
   } else if (player.state === 'FALLING') {
-    player.x += player.vx * dt;
-    player.y += player.vy * dt;
+    player.x += player.vx * dt; player.y += player.vy * dt;
     player.vy += PHYSICS.gravity * dt;
     player.rotation += 5 * dt;
     if (player.y > LR.G.H + 120) handleMiss();
@@ -277,9 +293,7 @@ function checkLanding(prevY) {
     const stone = stones[i];
     if (!stone) continue;
     const halfW = stone.w / 2;
-    const leftEdge = stone.x - halfW;
-    const rightEdge = stone.x + halfW;
-
+    const leftEdge = stone.x - halfW, rightEdge = stone.x + halfW;
     if (prevY <= stone.y + 8 && player.y >= stone.y - 4) {
       if (player.x >= leftEdge && player.x <= rightEdge) {
         player.y = stone.y;
@@ -290,15 +304,14 @@ function checkLanding(prevY) {
           spawnFloatingText(player.x, player.y - 45, "CHƯA QUA ĐÁ!", "#94a3b8");
           Sound.sfx.thud();
         } else {
-          const distFromCenter = Math.abs(player.x - stone.x);
-          completeSuccessfulJump(stone, distFromCenter <= PHYSICS.sweetSpotRadius, false);
+          completeSuccessfulJump(stone, Math.abs(player.x - stone.x) <= PHYSICS.sweetSpotRadius, false);
         }
         return;
       }
       if (i === 1) {
-        const snapTol = PHYSICS.edgeSnapTolerance;
-        const nearLeft = player.x >= leftEdge - snapTol && player.x < leftEdge;
-        const nearRight = player.x > rightEdge && player.x <= rightEdge + snapTol;
+        const t = PHYSICS.edgeSnapTolerance;
+        const nearLeft = player.x >= leftEdge - t && player.x < leftEdge;
+        const nearRight = player.x > rightEdge && player.x <= rightEdge + t;
         if (nearLeft || nearRight) {
           player.state = 'CLIMBING';
           player.vx = 0; player.vy = 0;
@@ -320,8 +333,7 @@ function checkLanding(prevY) {
 }
 
 function completeSuccessfulJump(targetStone, isSweet, wasEdgeSnap) {
-  player.y = targetStone.y;
-  player.state = 'IDLE';
+  player.y = targetStone.y; player.state = 'IDLE';
   if (isSweet) {
     const pts = 2 * gs.combo;
     gs.score += pts;
@@ -332,8 +344,7 @@ function completeSuccessfulJump(targetStone, isSweet, wasEdgeSnap) {
     targetStone.crystalCollected = true;
     Sound.sfx.combo(gs.combo);
   } else {
-    gs.score += 1;
-    gs.combo = 1;
+    gs.score += 1; gs.combo = 1;
     if (!wasEdgeSnap) {
       spawnFloatingText(player.x, player.y - 45, "+1", "#e2e8f0");
       spawnParticles(player.x, player.y, '#94a3b8', 10, 90);
@@ -358,7 +369,7 @@ function handleMiss() {
   });
 }
 
-/* ---- draw ---- */
+/* ---- Draw (đã sửa DPR) ---- */
 function drawFloatingStone(ctx, stone, isTarget) {
   const x = stone.x - stone.w / 2, y = stone.y, w = stone.w, h = stone.h;
   ctx.save();
@@ -368,20 +379,16 @@ function drawFloatingStone(ctx, stone, isTarget) {
   bodyGrad.addColorStop(1, '#0f172a');
   ctx.fillStyle = bodyGrad;
   ctx.beginPath();
-  ctx.moveTo(x + 4, y + 6);
-  ctx.lineTo(x + w - 4, y + 6);
+  ctx.moveTo(x + 4, y + 6); ctx.lineTo(x + w - 4, y + 6);
   ctx.lineTo(x + w - 10, y + h - 8);
   ctx.lineTo(x + w * 0.65, y + h + 6);
   ctx.lineTo(x + w * 0.32, y + h + 2);
   ctx.lineTo(x + 12, y + h - 10);
-  ctx.closePath();
-  ctx.fill();
+  ctx.closePath(); ctx.fill();
   ctx.strokeStyle = '#64748b'; ctx.lineWidth = 1.5; ctx.stroke();
 
   const topGrad = ctx.createLinearGradient(x, y, x + w, y);
-  topGrad.addColorStop(0, '#38bdf8');
-  topGrad.addColorStop(0.5, '#818cf8');
-  topGrad.addColorStop(1, '#38bdf8');
+  topGrad.addColorStop(0, '#38bdf8'); topGrad.addColorStop(0.5, '#818cf8'); topGrad.addColorStop(1, '#38bdf8');
   ctx.fillStyle = '#cbd5e1';
   ctx.beginPath(); ctx.roundRect(x, y, w, 10, 5); ctx.fill();
   ctx.fillStyle = topGrad;
@@ -422,8 +429,8 @@ function drawCharacter(ctx) {
   const w = CHARACTER_CONFIG.width, h = CHARACTER_CONFIG.height;
 
   if (player.state === 'CHARGING') {
-    const glowColor = ratio > 0.75 ? 'rgba(244, 63, 94, 0.45)' : (ratio > 0.4 ? 'rgba(251, 191, 36, 0.4)' : 'rgba(56, 189, 248, 0.35)');
-    ctx.fillStyle = glowColor;
+    const glow = ratio > 0.75 ? 'rgba(244, 63, 94, 0.45)' : (ratio > 0.4 ? 'rgba(251, 191, 36, 0.4)' : 'rgba(56, 189, 248, 0.35)');
+    ctx.fillStyle = glow;
     ctx.beginPath(); ctx.arc(0, -h * 0.4, w * (0.55 + ratio * 0.25), 0, Math.PI * 2); ctx.fill();
   }
 
@@ -471,46 +478,33 @@ function drawAimingAids(ctx) {
   const { vx, vy, flightTime } = calculateJumpVelocities(getChargeRatio());
   const maxFraction = 0.36, numDots = 6;
   for (let i = 1; i <= numDots; i++) {
-    const frac = (i / numDots) * maxFraction;
-    const t = frac * flightTime;
+    const t = (i / numDots) * maxFraction * flightTime;
     const px = player.x + vx * t;
     const py = player.y + vy * t + 0.5 * PHYSICS.gravity * t * t;
     const alpha = 1 - (i / (numDots + 1)) * 0.75;
-    const radius = Math.max(2.5, 5.5 - i * 0.45);
     ctx.fillStyle = `rgba(56, 189, 248, ${alpha})`;
-    ctx.beginPath(); ctx.arc(px, py, radius, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(px, py, Math.max(2.5, 5.5 - i * 0.45), 0, Math.PI * 2); ctx.fill();
   }
 }
 
-/* ---- Thanh lực LUÔN hiển thị (giống bản gốc) ---- */
 function drawChargeBar(ctx) {
   const G = LR.G;
   const ratio = player ? getChargeRatio() : 0;
   const barW = Math.min(230, G.W * 0.34), barH = 10;
   const x = 14, y = (G.top || 0) + 26;
-
   ctx.save();
-  // Panel nền
   ctx.fillStyle = 'rgba(15, 23, 42, 0.82)';
   ctx.strokeStyle = '#334155'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.roundRect(x - 8, y - 16, barW + 16, barH + 24, 8);
-  ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.roundRect(x - 8, y - 16, barW + 16, barH + 24, 8); ctx.fill(); ctx.stroke();
 
-  // Nhãn
   ctx.font = '700 9px "Be Vietnam Pro", sans-serif';
   ctx.textBaseline = 'top'; ctx.textAlign = 'left';
-  ctx.fillStyle = '#cbd5e1';
-  ctx.fillText('LỰC TÍCH TỤ', x, y - 13);
-
-  // Phần trăm
+  ctx.fillStyle = '#cbd5e1'; ctx.fillText('LỰC TÍCH TỤ', x, y - 13);
   ctx.fillStyle = '#22d3ee'; ctx.textAlign = 'right';
   ctx.fillText(Math.round(ratio * 100) + '%', x + barW, y - 13);
 
-  // Track
   ctx.fillStyle = '#1e293b';
   ctx.beginPath(); ctx.roundRect(x, y, barW, barH, 5); ctx.fill();
-
-  // Fill
   if (ratio > 0) {
     const grad = ctx.createLinearGradient(x, 0, x + barW, 0);
     grad.addColorStop(0, '#38bdf8');
@@ -522,7 +516,6 @@ function drawChargeBar(ctx) {
   ctx.restore();
 }
 
-/* ---- Hint dưới đáy ---- */
 function drawHint(ctx) {
   if (!player || player.state !== 'IDLE') return;
   const G = LR.G;
@@ -541,10 +534,15 @@ function drawHint(ctx) {
 }
 
 function draw() {
-  const ctx = LR.G.ctx, W = LR.G.W, H = LR.G.H;
+  const G = LR.G, ctx = G.ctx;
   if (!ctx || !gs) return;
-  ctx.clearRect(0, 0, W, H);
 
+  // === FIX: đưa context về CSS-pixel coordinate system ===
+  const dpr = G.dpr || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, G.W, G.H);       // trong hệ toạ độ đã scale = full bitmap
+
+  const W = G.W, H = G.H;
   const skyGrad = ctx.createLinearGradient(0, 0, 0, H);
   skyGrad.addColorStop(0, '#090d16');
   skyGrad.addColorStop(0.6, '#1e293b');
@@ -586,10 +584,9 @@ function spawnParticles(x, y, color, count, speed) {
     const spd = 25 + Math.random() * speed;
     particles.push({
       x, y: y - 4,
-      vx: Math.cos(angle) * spd,
-      vy: Math.sin(angle) * spd - 40,
-      radius: 2 + Math.random() * 3,
-      color, alpha: 1, life: 0.4 + Math.random() * 0.25
+      vx: Math.cos(angle) * spd, vy: Math.sin(angle) * spd - 40,
+      radius: 2 + Math.random() * 3, color, alpha: 1,
+      life: 0.4 + Math.random() * 0.25
     });
   }
 }
@@ -597,9 +594,10 @@ function spawnFloatingText(x, y, text, color) {
   floatingTexts.push({ x, y, text, color, life: 1.1 });
 }
 
-/* ---- mod ---- */
+/* ---- Mod ---- */
 const mod = {
   enter() {
+    stopChargeSound();
     reset();
     initClouds();
     createOrientationOverlay();
@@ -608,24 +606,28 @@ const mod = {
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('resize', updateOrientationOverlay);
     window.addEventListener('orientationchange', updateOrientationOverlay);
+    document.addEventListener('visibilitychange', onVisibility);
   },
   exit() {
+    stopChargeSound();
     window.removeEventListener('keydown', onKeyDown);
     window.removeEventListener('keyup', onKeyUp);
     window.removeEventListener('resize', updateOrientationOverlay);
     window.removeEventListener('orientationchange', updateOrientationOverlay);
+    document.removeEventListener('visibilitychange', onVisibility);
     removeOrientationOverlay();
+    const ctx = LR.G.ctx;
+    if (ctx) ctx.setTransform(1, 0, 0, 1, 0, 0);
   },
   resize() {
     if (!stones || !player || !gs || !stones[0]) return;
     const groundY = getBaseGroundY();
     stones.forEach(s => { s.baseY = groundY + (s.yOffset || 0); s.y = s.baseY; });
-    if (player.state === 'IDLE') {
-      player.x = stones[0].x; player.y = stones[0].y;
-    }
+    if (player.state === 'IDLE') { player.x = stones[0].x; player.y = stones[0].y; }
     gs.cameraX = stones[0].x - 115;
     gs.targetCameraX = gs.cameraX;
     clouds.forEach(c => { if (c.x > LR.G.W) c.x = Math.random() * LR.G.W; });
+    updateOrientationOverlay();
   },
   update(dt) { update(dt); },
   draw() { draw(); },
@@ -634,11 +636,11 @@ const mod = {
   legend(el) {
     el.innerHTML = '<p class="note" style="margin:8px 0 0">' +
       '💡 Nhảy vào tâm khối đá (chấm vàng) để được điểm hoàn hảo và tăng combo. ' +
-      'Nhảy sát mép sẽ được bấu víu an toàn. Cần đạt <b>' + WIN_SCORE + ' điểm</b> để qua ải.</p>';
+      'Nhảy sát mép sẽ được bấu víu an toàn. Cần đạt <b>' + WIN_SCORE + ' điểm</b> khi rơi để qua ải.</p>';
   }
 };
 
-/* ---- register ---- */
+/* ---- Register ---- */
 const LEVEL = {
   id: '14-nhay-da',
   title: 'Nhảy đá qua sông',
