@@ -8,7 +8,7 @@ const {clamp} = LR.util;
 /* ================= CONFIG ================= */
 const WORLD_SIZE = 1600;
 const WAVE_DURATION = 30;
-const WIN_BOSS_WAVE = 3;   // thắng khi boss đợt 3 bị tiêu diệt
+const WIN_WAVE = 3;   // đợt 3 có boss → giết là thắng
 
 const WEAPON_DB = {
   milk: { id:'milk', name:'Súng Bình Sữa', icon:'🍼', type:'weapon',
@@ -50,7 +50,6 @@ const PASSIVE_DB = {
 let st = null;
 let layout = null;
 
-/* ================= HELPERS ================= */
 function getViewScale() {
   const W = LR.G.W, H = LR.G.H;
   const minDim = Math.min(W, H);
@@ -58,16 +57,32 @@ function getViewScale() {
   if (minDim < 580) return isPortrait ? Math.max(0.68, W / 560) : Math.max(0.75, H / 500);
   return 1.0;
 }
+function computeLayout() {
+  layout = { scale: getViewScale() };
+}
 function removeFast(arr, i) {
   if (i < 0 || i >= arr.length) return;
   arr[i] = arr[arr.length - 1];
   arr.pop();
 }
-function computeLayout() {
-  layout = { scale: getViewScale() };
+
+function createPlayer() {
+  return {
+    x: WORLD_SIZE/2, y: WORLD_SIZE/2, vx: 0, vy: 0,
+    radius: 20, hp: 110, maxHp: 110, hpRegen: 0.4,
+    speed: 230, dmgMult: 1, atkSpeedMult: 1,
+    critChance: 0.06, critDmg: 1.6, multishot: 0,
+    level: 1, xp: 0, xpToNext: 22,
+    kills: 0, goldEarned: 0,
+    facingAngle: 0, walkAnim: 0, recoil: 0, hitFlash: 0,
+    invulnTimer: 0, slowTimer: 0, slowFactor: 1,
+    dashTimer: 0, dashCooldown: 0, dashMaxCd: 2.8,
+    dashVx: 0, dashVy: 0,
+    weapons: { milk: 1 }, passives: {}, cooldowns: { milk: 0 },
+    orbitAngle: 0
+  };
 }
 
-/* ================= RESET ================= */
 function reset() {
   st = {
     state: 'playing',
@@ -75,48 +90,57 @@ function reset() {
     camera: { x: WORLD_SIZE/2, y: WORLD_SIZE/2 },
     wave: 1, waveTimer: WAVE_DURATION,
     spawnTimer: 0, crateTimer: 16,
-    activeBoss: null,
-    pendingWin: false, winTimer: 0,
-    cardActive: false, cardChoices: [], cardRects: [], pendingLevelUps: 0,
-    rerollCost: 20,
+    activeBoss: null, pendingWin: false, winTimer: 0,
+    cardActive: false, cardChoices: [], cardRects: [],
+    pendingLevelUps: 0,
     keys: {},
-    joystick: { active: false, pointerId: null, startX: 0, startY: 0, curX: 0, curY: 0, dx: 0, dy: 0 },
+    joystick: { active: false, pointerId: null, startX:0, startY:0, curX:0, curY:0, dx:0, dy:0 },
     enemies: [], projectiles: [], enemyProjectiles: [],
     gems: [], crates: [], particles: [], floatingTexts: [], lightningBolts: [],
     player: createPlayer()
   };
-  st.player.weapons[st.player.startWeapon] = 1;
   spawnCrate();
   updateHUD();
-}
-
-function createPlayer() {
-  return {
-    x: WORLD_SIZE/2, y: WORLD_SIZE/2,
-    vx: 0, vy: 0, radius: 20,
-    hp: 110, maxHp: 110, hpRegen: 0.4,
-    speed: 230, dmgMult: 1, atkSpeedMult: 1,
-    critChance: 0.06, critDmg: 1.6, multishot: 0, xpMult: 1,
-    level: 1, xp: 0, xpToNext: 22,
-    kills: 0, goldEarned: 0,
-    facingAngle: 0, walkAnim: 0, recoil: 0, hitFlash: 0,
-    invulnTimer: 0, slowTimer: 0, slowFactor: 1,
-    dashTimer: 0, dashCooldown: 0, dashMaxCd: 2.8, dashVx: 0, dashVy: 0,
-    weapons: {}, passives: {}, cooldowns: {},
-    orbitAngle: 0,
-    startWeapon: 'milk'
-  };
 }
 
 function updateHUD() {
   if (!st) return;
   const p = st.player;
   LR.G.hud.set([
-    { l: 'Cấp', v: p.level },
     { l: 'Đợt', v: st.wave },
+    { l: 'Cấp', v: p.level },
     { l: 'Diệt', v: p.kills }
   ]);
 }
+
+/* ================= SOUND (dùng LR.Sound) ================= */
+function sfxShoot(type) {
+  Sound.init();
+  if (type === 'milk')       Sound.tone('sine', 380, 690, 0.065, 0.08);
+  else if (type === 'syringe') Sound.tone('triangle', 640, 220, 0.08, 0.09);
+  else if (type === 'bubble')  Sound.tone('sine', 520, 980, 0.09, 0.08);
+  else if (type === 'powder')  Sound.sfx.thud();
+  else if (type === 'lightning') Sound.sfx.zip();
+  else Sound.sfx.zip();
+}
+function sfxHit(isCrit) {
+  if (isCrit) Sound.tone('triangle', 420, 90, 0.05, 0.09);
+  else        Sound.tone('sine', 260, 90, 0.05, 0.05);
+}
+function sfxGem(isGold) {
+  const base = isGold ? 1040 : 720 + Math.random() * 200;
+  Sound.tone('sine', base, base * 1.4, 0.075, 0.06);
+}
+function sfxExplode() { Sound.sfx.killBig(); }
+function sfxDash()    { Sound.sfx.dive(); }
+function sfxLevelUp() {
+  Sound.tone('triangle', 523.25, 523.25, 0.15, 0.12, 0);
+  Sound.tone('triangle', 659.25, 659.25, 0.15, 0.12, 0.07);
+  Sound.tone('triangle', 783.99, 783.99, 0.15, 0.12, 0.14);
+  Sound.tone('triangle', 1046.5, 1046.5, 0.2, 0.12, 0.21);
+}
+function sfxWin()  { Sound.sfx.win(); }
+function sfxLose() { Sound.sfx.lose(); }
 
 /* ================= SPAWN ================= */
 function spawnCrate() {
@@ -135,31 +159,25 @@ function spawnEnemy(forcedType) {
   const effW = LR.G.W / layout.scale;
   const effH = LR.G.H / layout.scale;
   const dist = Math.max(effW, effH) * 0.54 + 65;
-  let x = p.x + Math.cos(ang) * dist;
-  let y = p.y + Math.sin(ang) * dist;
-  x = clamp(x, 60, WORLD_SIZE - 60);
-  y = clamp(y, 60, WORLD_SIZE - 60);
+  let x = clamp(p.x + Math.cos(ang) * dist, 60, WORLD_SIZE - 60);
+  let y = clamp(p.y + Math.sin(ang) * dist, 60, WORLD_SIZE - 60);
 
   const w = st.wave;
   let type = forcedType;
   if (!type) {
     const roll = Math.random();
-    // Sprinter xuất hiện từ wave 2 (12%) — nhanh + làm chậm
-    // Splitter từ wave 3 (12%) — chết tách đôi
     if (w >= 4 && roll < 0.10) type = 'sporebomb';
-    else if (w >= 3 && roll < 0.28) type = 'splitter';
+    else if (w >= 3 && roll < 0.26) type = 'splitter';
     else if (w >= 2 && roll < 0.42) type = 'sprinter';
-    else if (w >= 3 && roll < 0.58) type = 'coronavirus';
-    else if (w >= 2 && roll < 0.78) type = 'bacillus';
+    else if (w >= 3 && roll < 0.56) type = 'coronavirus';
+    else if (w >= 2 && roll < 0.76) type = 'bacillus';
     else type = 'cocci';
   }
 
   const scaleHp = 1 + (w - 1) * 0.42;
   const scaleDmg = 1 + (w - 1) * 0.28;
-  const scaleSpd = 1 + (w - 1) * 0.06;
-
-  const base = { x, y, hitFlash: 0, isDead: false,
-    animOffset: Math.random() * 10, scaleHp, scaleDmg };
+  const scaleSpd = 1 + (w - 1) * 0.05;
+  const base = { x, y, hitFlash:0, isDead:false, animOffset: Math.random() * 10 };
 
   if (type === 'cocci') {
     st.enemies.push({ ...base, type, radius: 16,
@@ -183,14 +201,12 @@ function spawnEnemy(forcedType) {
       speed: 185*scaleSpd, damage: 38*scaleDmg,
       color: '#fb923c', coreColor: '#c2410c', xpValue: 10 });
   } else if (type === 'sprinter') {
-    // ⭐ MỚI: Vi khuẩn chạy nhanh, chạm làm chậm bé
     st.enemies.push({ ...base, type, radius: 11,
-      hp: 26*scaleHp, maxHp: 26*scaleHp,
-      speed: 300*scaleSpd, damage: 8*scaleDmg,
+      hp: 28*scaleHp, maxHp: 28*scaleHp,
+      speed: 320*scaleSpd, damage: 8*scaleDmg,
       color: '#fde047', coreColor: '#a16207', xpValue: 5,
       trail: [] });
   } else if (type === 'splitter') {
-    // ⭐ MỚI: Vi khuẩn tách đôi khi chết
     st.enemies.push({ ...base, type, radius: 20,
       hp: 70*scaleHp, maxHp: 70*scaleHp,
       speed: 105*scaleSpd, damage: 16*scaleDmg,
@@ -198,14 +214,15 @@ function spawnEnemy(forcedType) {
       canSplit: true });
   } else if (type === 'boss') {
     const bossHp = 1350 * scaleHp;
-    const boss = { ...base, type:'boss', name:'SIÊU VI KHUẨN ĐỢT ' + w,
+    const boss = { ...base, type:'boss',
+      name: 'SIÊU VI KHUẨN ĐỢT ' + w,
       radius: 46, hp: bossHp, maxHp: bossHp,
       speed: 112*scaleSpd, damage: 36*scaleDmg,
       color: '#84cc16', coreColor: '#3f6212', xpValue: 100,
       skillCd: 2.6 };
     st.enemies.push(boss);
     st.activeBoss = boss;
-    Sound.sfx.bad();
+    sfxExplode();
   }
 }
 
@@ -229,13 +246,11 @@ function dealDamage(enemy, rawDmg, knockback, srcX, srcY) {
   const dmg = Math.max(1, Math.round(rawDmg * p.dmgMult * (isCrit ? p.critDmg : 1)));
   enemy.hp -= dmg;
   enemy.hitFlash = 0.1;
-
   if (knockback > 0 && enemy.type !== 'boss') {
     const a = Math.atan2(enemy.y - srcY, enemy.x - srcX);
     enemy.x += Math.cos(a) * knockback;
     enemy.y += Math.sin(a) * knockback;
   }
-
   if (st.floatingTexts.length < 30) {
     st.floatingTexts.push({
       x: enemy.x + (Math.random()-.5)*16, y: enemy.y - enemy.radius,
@@ -245,8 +260,7 @@ function dealDamage(enemy, rawDmg, knockback, srcX, srcY) {
       vy: -45, life: 0.5, maxLife: 0.5
     });
   }
-  Sound.sfx.thud();
-
+  sfxHit(isCrit);
   if (enemy.hp <= 0) killEnemy(enemy);
 }
 
@@ -261,28 +275,27 @@ function killEnemy(enemy) {
     createExplosion(enemy.x, enemy.y, 85, 34, true, '#fb923c');
   }
 
-  // ⭐ MỚI: Splitter tách đôi khi chết
+  // Splitter tách đôi khi chết
   if (enemy.type === 'splitter' && enemy.canSplit) {
     const w = st.wave;
     const scaleHp = 1 + (w - 1) * 0.42;
     const scaleDmg = 1 + (w - 1) * 0.28;
     for (let i = 0; i < 2; i++) {
-      const ang = (i === 0 ? -Math.PI/3 : Math.PI/3);
-      const off = 22;
+      const ang = i === 0 ? -Math.PI/3 : Math.PI/3;
       st.enemies.push({
         type: 'splitling',
-        x: enemy.x + Math.cos(ang) * off,
-        y: enemy.y + Math.sin(ang) * off,
+        x: enemy.x + Math.cos(ang) * 24,
+        y: enemy.y + Math.sin(ang) * 24,
         radius: 11,
         hp: 32*scaleHp, maxHp: 32*scaleHp,
-        speed: 145, damage: 10*scaleDmg,
+        speed: 150, damage: 10*scaleDmg,
         color: '#fbcfe8', coreColor: '#9f1239',
         xpValue: 4,
         hitFlash: 0, isDead: false, canSplit: false,
-        animOffset: Math.random() * 10, scaleHp, scaleDmg
+        animOffset: Math.random() * 10
       });
     }
-    Sound.sfx.splat && Sound.sfx.splat();
+    sfxExplode();
   }
 
   const dropCount = enemy.type === 'boss' ? 8 : 1;
@@ -300,23 +313,31 @@ function killEnemy(enemy) {
       st.gems.push({
         x: enemy.x + (Math.random()-.5)*20,
         y: enemy.y + (Math.random()-.5)*20,
-        kind: 'gold', value: 1,
-        color: '#fbbf24', radius: 7
+        kind: 'gold', value: 1, color: '#fbbf24', radius: 7
       });
     }
   }
 
   if (enemy === st.activeBoss) {
     st.activeBoss = null;
-    st.pendingWin = true;
-    st.winTimer = 1.0;
-    Sound.sfx.win();
-    spawnParticles(enemy.x, enemy.y, '#84cc16', 40, 300);
+    if (st.wave >= WIN_WAVE) {
+      // WIN!
+      st.pendingWin = true;
+      sfxWin();
+      spawnParticles(enemy.x, enemy.y, '#84cc16', 40, 300);
+      setTimeout(() => {
+        if (st && st.pendingWin && LR.G.state === 'play') {
+          finishGame(true);
+        }
+      }, 1000);
+    } else {
+      sfxExplode();
+    }
   }
 }
 
 function createExplosion(x, y, radius, dmg, hurtPlayer, color) {
-  Sound.sfx.killBig && Sound.sfx.killBig();
+  sfxExplode();
   if (st.particles.length < 45) {
     st.particles.push({ x, y, vx:0, vy:0, color, size: radius,
       life: 0.25, maxLife: 0.25, isRing: true });
@@ -340,7 +361,7 @@ function damagePlayer(amount) {
   p.hp -= Math.round(amount);
   p.hitFlash = 0.2;
   p.invulnTimer = 0.45;
-  Sound.sfx.hurtBig && Sound.sfx.hurtBig();
+  Sound.sfx.hurtBig();
   if (st.floatingTexts.length < 30) {
     st.floatingTexts.push({
       x: p.x, y: p.y - 25, text: '-' + Math.round(amount),
@@ -382,7 +403,7 @@ function updateWeapons(dt) {
     const lv = p.weapons[id];
     const w = WEAPON_DB[id];
     if (id === 'pacifier') continue;
-    p.cooldowns[id] -= dt * p.atkSpeedMult * (1 + (lv-1) * 0.08);
+    p.cooldowns[id] = (p.cooldowns[id] || 0) - dt * p.atkSpeedMult * (1 + (lv-1) * 0.08);
     if (p.cooldowns[id] > 0) continue;
     const dmg = w.baseDamage * (1 + (lv-1) * 0.28);
 
@@ -397,7 +418,7 @@ function updateWeapons(dt) {
           knockback: 7, renderStyle: 'milk' });
       }
       p.recoil = 5;
-      Sound.sfx.zip && Sound.sfx.zip();
+      sfxShoot('milk');
     } else if (id === 'syringe') {
       if (!nearest) continue;
       p.cooldowns[id] = w.baseCd;
@@ -410,7 +431,7 @@ function updateWeapons(dt) {
           knockback: 14, pierce: 2, renderStyle: 'syringe' });
       }
       p.recoil = 7;
-      Sound.sfx.zip && Sound.sfx.zip();
+      sfxShoot('syringe');
     } else if (id === 'bubble') {
       if (!nearest) continue;
       p.cooldowns[id] = w.baseCd;
@@ -421,7 +442,7 @@ function updateWeapons(dt) {
           speed: w.speed, damage: dmg, radius: 9, color: '#f472b6',
           range: w.range, homing: true, knockback: 6, renderStyle: 'bubble' });
       }
-      Sound.sfx.zip && Sound.sfx.zip();
+      sfxShoot('bubble');
     } else if (id === 'powder') {
       if (!nearest) continue;
       p.cooldowns[id] = w.baseCd;
@@ -435,7 +456,7 @@ function updateWeapons(dt) {
           renderStyle: 'powder' });
       }
       p.recoil = 6;
-      Sound.sfx.zip && Sound.sfx.zip();
+      sfxShoot('powder');
     } else if (id === 'rattle') {
       p.cooldowns[id] = w.baseCd;
       const cnt = 1 + p.multishot + Math.floor(lv/2);
@@ -445,7 +466,7 @@ function updateWeapons(dt) {
           speed: w.speed, damage: dmg, radius: 12, color: '#a78bfa',
           range: 850, isBoomerang: true, pierce: 99, renderStyle: 'rattle' });
       }
-      Sound.sfx.zip && Sound.sfx.zip();
+      sfxShoot('bubble');
     } else if (id === 'lightning') {
       const target = findNearestEnemy(p.x, p.y, w.range);
       if (!target) continue;
@@ -461,7 +482,7 @@ function updateWeapons(dt) {
         prevX = nx; prevY = ny;
         cur = findNearestEnemy(prevX, prevY, 240, hitList);
       }
-      Sound.sfx.zip && Sound.sfx.zip();
+      sfxShoot('lightning');
     } else if (id === 'aura') {
       p.cooldowns[id] = w.baseCd;
       const rad = w.radius + (lv-1) * 16;
@@ -502,7 +523,7 @@ function updateWeapons(dt) {
 /* ================= XP / LEVEL UP ================= */
 function gainXp(amount) {
   const p = st.player;
-  p.xp += Math.round(amount * p.xpMult);
+  p.xp += Math.round(amount);
   while (p.xp >= p.xpToNext) {
     p.xp -= p.xpToNext;
     p.level++;
@@ -515,9 +536,8 @@ function gainXp(amount) {
 
 function triggerLevelUp() {
   st.cardActive = true;
-  st.state = 'levelup';
   st.cardChoices = generateCards();
-  Sound.sfx.catchOk && Sound.sfx.catchOk();
+  sfxLevelUp();
 }
 
 function generateCards() {
@@ -546,10 +566,9 @@ function selectCard(idx) {
     st.cardChoices = generateCards();
   } else {
     st.cardActive = false;
-    st.state = 'playing';
     st.cardChoices = [];
   }
-  Sound.sfx.catchOk && Sound.sfx.catchOk();
+  Sound.sfx.catchOk();
   updateHUD();
 }
 
@@ -571,11 +590,12 @@ function applyUpgrade(id) {
 
 /* ================= FINISH ================= */
 function finishGame(win) {
-  if (st.state === 'over') return;
+  if (!st) return;
   st.state = 'over';
   const p = st.player;
   const score = p.kills * 10 + p.level * 50;
   const stars = win ? (p.kills >= 200 ? 3 : p.kills >= 100 ? 2 : 1) : 0;
+  if (win) sfxWin(); else sfxLose();
   LR.G.finish({
     win, score, stars,
     title: win ? 'CHIẾN THẮNG VI KHUẨN!' : 'EM BÉ BUỒN NGỦ!',
@@ -590,7 +610,7 @@ function finishGame(win) {
   });
 }
 
-/* ================= PARTICLE HELPERS ================= */
+/* ================= HELPERS ================= */
 function spawnParticles(x, y, color, count, speed) {
   for (let i = 0; i < count && st.particles.length < 60; i++) {
     const a = Math.random() * Math.PI * 2;
@@ -604,22 +624,14 @@ function spawnParticles(x, y, color, count, speed) {
 
 /* ================= UPDATE ================= */
 function update(dt) {
-  if (!st || st.state !== 'playing' || st.cardActive) return;
+  if (!st || st.cardActive || st.state !== 'playing') return;
+  if (LR.G.state !== 'play') return;
+
   const p = st.player;
   st.time += dt;
 
-  if (st.pendingWin) {
-    st.winTimer -= dt;
-    if (st.winTimer <= 0) { finishGame(true); return; }
-  }
-
-  // Slow decay
-  if (p.slowTimer > 0) {
-    p.slowTimer -= dt;
-    p.slowFactor = 0.55;
-  } else {
-    p.slowFactor = 1;
-  }
+  if (p.slowTimer > 0) { p.slowTimer -= dt; p.slowFactor = 0.55; }
+  else p.slowFactor = 1;
 
   if (p.hp < p.maxHp) p.hp = Math.min(p.maxHp, p.hp + p.hpRegen * dt);
   if (p.hitFlash > 0) p.hitFlash -= dt;
@@ -658,13 +670,12 @@ function update(dt) {
   st.camera.x += (p.x - st.camera.x) * Math.min(1, dt * 10);
   st.camera.y += (p.y - st.camera.y) * Math.min(1, dt * 10);
 
-  // Wave
   st.waveTimer -= dt;
   if (st.waveTimer <= 0) {
     st.wave++;
     st.waveTimer = Math.min(50, WAVE_DURATION + st.wave * 2);
     spawnCrate();
-    if (st.wave % WIN_BOSS_WAVE === 0) spawnEnemy('boss');
+    if (st.wave % 3 === 0) spawnEnemy('boss');
   }
 
   const spawnInt = Math.max(0.18, 1.0 - st.wave * 0.08);
@@ -759,15 +770,19 @@ function update(dt) {
     if (e.hitFlash > 0) e.hitFlash -= dt;
     if (e.pacifierHitCd > 0) e.pacifierHitCd -= dt;
 
-    const dx = p.x - e.x, dy = p.y - e.y;
-    const dist = Math.hypot(dx, dy) || 1;
-
+    // Sprinter trail
     if (e.type === 'sprinter') {
-      // Trail
-      e.trail = e.trail || [];
+      if (!e.trail) e.trail = [];
       e.trail.push({ x: e.x, y: e.y, life: 0.22 });
       if (e.trail.length > 4) e.trail.shift();
+      for (let t = e.trail.length - 1; t >= 0; t--) {
+        e.trail[t].life -= dt;
+        if (e.trail[t].life <= 0) e.trail.splice(t, 1);
+      }
     }
+
+    const dx = p.x - e.x, dy = p.y - e.y;
+    const dist = Math.hypot(dx, dy) || 1;
 
     if (e.type === 'coronavirus') {
       if (dist > 230) {
@@ -815,7 +830,7 @@ function update(dt) {
         createExplosion(e.x, e.y, 90, e.damage, true, '#fb923c');
         continue;
       } else if (e.type === 'sprinter') {
-        // ⭐ MỚI: damage nhỏ + slow, áp dụng bất kể invuln
+        // Damage nhỏ + slow
         p.slowTimer = Math.max(p.slowTimer, 2.2);
         if (p.invulnTimer <= 0) damagePlayer(e.damage);
       } else {
@@ -830,8 +845,8 @@ function update(dt) {
     if (!g) continue;
     const d = Math.hypot(p.x - g.x, p.y - g.y);
     if (d <= p.radius + g.radius + 4) {
-      if (g.kind === 'xp') { Sound.sfx.catchOk && Sound.sfx.catchOk(); gainXp(g.value); }
-      else if (g.kind === 'gold') { Sound.sfx.tick && Sound.sfx.tick(); p.goldEarned += g.value; }
+      if (g.kind === 'xp') { sfxGem(false); gainXp(g.value); }
+      else if (g.kind === 'gold') { sfxGem(true); p.goldEarned += g.value; }
       else if (g.kind === 'heal') {
         p.hp = Math.min(p.maxHp, p.hp + 40);
         st.floatingTexts.push({ x: p.x, y: p.y - 25, text: '+40 HP',
@@ -872,7 +887,7 @@ function update(dt) {
 
 function openCrate(cr, idx) {
   removeFast(st.crates, idx);
-  Sound.sfx.killBig && Sound.sfx.killBig();
+  sfxExplode();
   const roll = Math.random();
   let kind = 'heal', color = '#4ade80';
   if (roll < 0.35) { kind = 'magnet'; color = '#38bdf8'; }
@@ -891,15 +906,13 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-function drawWorldBackground(ctx) {
-  // Nền caro
+function drawWorldBg(ctx) {
   const tile = 64;
   const camX = st.camera.x, camY = st.camera.y;
   const s = layout.scale;
   const halfW = LR.G.W / (2*s), halfH = LR.G.H / (2*s);
   const left = camX - halfW - 64, right = camX + halfW + 64;
   const top = camY - halfH - 64, bottom = camY + halfH + 64;
-
   ctx.fillStyle = '#0a1d30';
   ctx.fillRect(left, top, right-left, bottom-top);
   ctx.fillStyle = '#0e243a';
@@ -908,14 +921,11 @@ function drawWorldBackground(ctx) {
   for (let x = startX; x < right; x += tile) {
     for (let y = startY; y < bottom; y += tile) {
       if (((x/tile) + (y/tile)) % 2 === 0) {
-        ctx.fillRect(Math.max(x, left), Math.max(y, top),
-          Math.min(tile, right - Math.max(x, left)),
-          Math.min(tile, bottom - Math.max(y, top)));
+        const px = Math.max(x, left), py = Math.max(y, top);
+        ctx.fillRect(px, py, Math.min(tile, right - px), Math.min(tile, bottom - py));
       }
     }
   }
-
-  // Viền thế giới
   ctx.strokeStyle = '#38bdf8';
   ctx.lineWidth = 6;
   ctx.strokeRect(0, 0, WORLD_SIZE, WORLD_SIZE);
@@ -923,31 +933,28 @@ function drawWorldBackground(ctx) {
 
 function drawEnemy(ctx, e) {
   ctx.save();
-  const squish = Math.sin(st.time * 9 + e.animOffset);
-  ctx.translate(e.x, e.y);
-  ctx.scale(1 + squish*0.06, 1 - squish*0.06);
-
-  // Trail của sprinter
+  // Sprinter trail
   if (e.type === 'sprinter' && e.trail) {
     for (let i = 0; i < e.trail.length; i++) {
       const t = e.trail[i];
-      const a = t.life / 0.22 * 0.5;
-      ctx.globalAlpha = a;
+      ctx.globalAlpha = (t.life / 0.22) * 0.45;
       ctx.fillStyle = '#fde047';
       ctx.beginPath();
-      ctx.arc(t.x - e.x, t.y - e.y, e.radius * (0.5 + i * 0.1), 0, Math.PI*2);
+      ctx.arc(t.x, t.y, e.radius * (0.4 + i * 0.13), 0, Math.PI*2);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
   }
 
-  // Shadow
+  const squish = Math.sin(st.time * 9 + e.animOffset);
+  ctx.translate(e.x, e.y);
+  ctx.scale(1 + squish*0.06, 1 - squish*0.06);
+
   ctx.fillStyle = 'rgba(0,0,0,0.3)';
   ctx.beginPath();
   ctx.ellipse(0, e.radius*0.9, e.radius*0.8, e.radius*0.3, 0, 0, Math.PI*2);
   ctx.fill();
 
-  // Spikes
   if (e.type === 'coronavirus' || e.type === 'boss' || e.type === 'sporebomb') {
     const spikes = e.type === 'boss' ? 12 : 8;
     ctx.strokeStyle = e.hitFlash > 0 ? '#ffffff' : e.color;
@@ -966,28 +973,21 @@ function drawEnemy(ctx, e) {
     }
   }
 
-  // Body
   ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : e.color;
   ctx.strokeStyle = '#090d16';
   ctx.lineWidth = 2.5;
   ctx.beginPath();
   if (e.type === 'bacillus') {
     roundRect(ctx, -e.radius*1.15, -e.radius*0.8, e.radius*2.3, e.radius*1.6, 12);
-  } else if (e.type === 'splitter') {
-    // ⭐ Splitter: hình tròn có đường chia giữa
-    ctx.arc(0, 0, e.radius, 0, Math.PI*2);
-  } else if (e.type === 'splitling') {
-    ctx.arc(0, 0, e.radius, 0, Math.PI*2);
   } else if (e.type === 'sprinter') {
-    // Sprinter: oval dài theo hướng chạy
-    ctx.ellipse(0, 0, e.radius * 1.5, e.radius * 0.85, 0, 0, Math.PI*2);
+    const dir = st.player ? Math.atan2(st.player.y - e.y, st.player.x - e.x) : 0;
+    ctx.ellipse(0, 0, e.radius * 1.5, e.radius * 0.85, dir, 0, Math.PI*2);
   } else {
     ctx.arc(0, 0, e.radius, 0, Math.PI*2);
   }
   ctx.fill();
   ctx.stroke();
 
-  // Core
   if (e.hitFlash <= 0) {
     ctx.fillStyle = e.coreColor || 'rgba(0,0,0,0.25)';
     ctx.beginPath();
@@ -995,7 +995,6 @@ function drawEnemy(ctx, e) {
     ctx.fill();
   }
 
-  // Splitter dividing line
   if (e.type === 'splitter') {
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 1.5;
@@ -1007,12 +1006,11 @@ function drawEnemy(ctx, e) {
     ctx.setLineDash([]);
   }
 
-  // Eyes
   const p = st.player;
   const angToP = p ? Math.atan2(p.y - e.y, p.x - e.x) : 0;
   const ex = Math.cos(angToP) * (e.radius * 0.28);
   const ey = Math.sin(angToP) * (e.radius * 0.28);
-  const eyeR = e.type === 'boss' ? 7 : 3.8;
+  const eyeR = e.type === 'boss' ? 7 : (e.type === 'sprinter' || e.type === 'splitling' ? 3 : 3.8);
   ctx.fillStyle = '#ffffff';
   ctx.beginPath();
   ctx.arc(ex - eyeR*1.2, ey - 2, eyeR, 0, Math.PI*2);
@@ -1024,7 +1022,6 @@ function drawEnemy(ctx, e) {
   ctx.arc(ex + eyeR*1.3, ey - 2, eyeR*0.5, 0, Math.PI*2);
   ctx.fill();
 
-  // HP bar
   if (e.hp < e.maxHp && e.type !== 'boss') {
     const bw = e.radius * 1.8;
     ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
@@ -1039,7 +1036,6 @@ function drawPlayer(ctx) {
   const p = st.player;
   if (!p) return;
 
-  // Pacifier orbit
   if (p.weapons.pacifier) {
     const lv = p.weapons.pacifier;
     const w = WEAPON_DB.pacifier;
@@ -1074,8 +1070,6 @@ function drawPlayer(ctx) {
     ctx.arc(0, 0, p.radius + 8, 0, Math.PI*2);
     ctx.fill(); ctx.stroke();
   }
-
-  // Slow indicator ⭐
   if (p.slowTimer > 0) {
     ctx.strokeStyle = '#38bdf8';
     ctx.lineWidth = 3;
@@ -1086,13 +1080,18 @@ function drawPlayer(ctx) {
     ctx.setLineDash([]);
   }
 
-  // Shadow
   ctx.fillStyle = 'rgba(0,0,0,0.35)';
   ctx.beginPath();
   ctx.ellipse(0, p.radius*0.95, p.radius*0.85, p.radius*0.32, 0, 0, Math.PI*2);
   ctx.fill();
 
-  // Body
+  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = '#94a3b8';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(0, 6, p.radius*0.85, 0, Math.PI);
+  ctx.fill(); ctx.stroke();
+
   ctx.fillStyle = p.hitFlash > 0 ? '#ffffff' : '#fed7aa';
   ctx.strokeStyle = '#0f172a';
   ctx.lineWidth = 2.8;
@@ -1100,7 +1099,7 @@ function drawPlayer(ctx) {
   ctx.arc(0, -2, p.radius*0.92, 0, Math.PI*2);
   ctx.fill(); ctx.stroke();
 
-  // Cap (boy)
+  // Cap
   ctx.fillStyle = '#38bdf8';
   ctx.beginPath();
   ctx.arc(0, -6, p.radius*0.9, Math.PI*1.1, -0.1);
@@ -1108,7 +1107,6 @@ function drawPlayer(ctx) {
   ctx.fillStyle = '#0284c7';
   ctx.fillRect(-p.radius*0.8, -8, p.radius*1.6, 5);
 
-  // Cheeks
   const lookX = Math.cos(p.facingAngle) * 3.5;
   const lookY = Math.sin(p.facingAngle) * 3.5;
   ctx.fillStyle = '#fb7185';
@@ -1119,14 +1117,12 @@ function drawPlayer(ctx) {
   ctx.fill();
   ctx.globalAlpha = 1;
 
-  // Eyes
   ctx.fillStyle = '#0f172a';
   ctx.beginPath();
   ctx.arc(lookX - 5.5, lookY - 2, 3.2, 0, Math.PI*2);
   ctx.arc(lookX + 5.5, lookY - 2, 3.2, 0, Math.PI*2);
   ctx.fill();
 
-  // Pacifier
   ctx.fillStyle = '#0284c7';
   ctx.strokeStyle = '#ffffff';
   ctx.lineWidth = 1.2;
@@ -1134,7 +1130,6 @@ function drawPlayer(ctx) {
   ctx.arc(lookX, lookY + 5, 4, 0, Math.PI*2);
   ctx.fill(); ctx.stroke();
 
-  // Gun
   ctx.rotate(p.facingAngle);
   ctx.translate(p.radius - p.recoil, 5);
   ctx.fillStyle = '#ffffff';
@@ -1144,6 +1139,254 @@ function drawPlayer(ctx) {
   ctx.fill(); ctx.stroke();
 
   ctx.restore();
+}
+
+function drawHUDBars(ctx) {
+  const G = LR.G, W = G.W, H = G.H;
+  const p = st.player;
+  const topY = (G.top || 0) + 4;
+
+  // XP bar
+  const xpW = Math.min(W - 24, 340), xpH = 10;
+  const xpX = (W - xpW) / 2, xpY = topY;
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+  roundRect(ctx, xpX - 2, xpY - 2, xpW + 4, xpH + 4, 6); ctx.fill();
+  ctx.fillStyle = '#1e293b';
+  roundRect(ctx, xpX, xpY, xpW, xpH, 4); ctx.fill();
+  const xpGrad = ctx.createLinearGradient(xpX, 0, xpX + xpW, 0);
+  xpGrad.addColorStop(0, '#f472b6'); xpGrad.addColorStop(1, '#38bdf8');
+  ctx.fillStyle = xpGrad;
+  roundRect(ctx, xpX, xpY, xpW * Math.min(1, p.xp / p.xpToNext), xpH, 4); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = '800 8px "Be Vietnam Pro", sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(p.xp + ' / ' + p.xpToNext + ' XP', xpX + xpW/2, xpY + xpH/2);
+
+  // Wave timer
+  const waveTxt = '⏱ ' + Math.max(0, Math.ceil(st.waveTimer)) + 's';
+  ctx.font = '900 11px "Be Vietnam Pro", sans-serif';
+  const wtw = ctx.measureText(waveTxt).width + 16;
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+  roundRect(ctx, W - wtw - 10, xpY - 1, wtw, xpH + 6, 6); ctx.fill();
+  ctx.fillStyle = '#22d3ee';
+  ctx.fillText(waveTxt, W - wtw/2 - 10, xpY + xpH/2 + 2);
+
+  // Boss bar
+  if (st.activeBoss) {
+    const bw = Math.min(360, W * 0.65), bh = 14;
+    const bx = (W - bw)/2, by = topY + xpH + 12;
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+    roundRect(ctx, bx - 3, by - 3, bw + 6, bh + 6, 8); ctx.fill();
+    ctx.fillStyle = '#1e293b';
+    roundRect(ctx, bx, by, bw, bh, 6); ctx.fill();
+    const boss = st.activeBoss;
+    const bg = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+    bg.addColorStop(0, '#84cc16'); bg.addColorStop(1, '#22d3ee');
+    ctx.fillStyle = bg;
+    roundRect(ctx, bx, by, bw * Math.max(0, boss.hp/boss.maxHp), bh, 6); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = '900 9px "Be Vietnam Pro", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('🦠 ' + boss.name + '  ' + Math.ceil(boss.hp) + '/' + Math.ceil(boss.maxHp), W/2, by + bh/2);
+  }
+
+  // HP bar (bottom-left)
+  const hpW = Math.min(240, W * 0.42), hpH = 14;
+  const hpX = 12, hpY = H - hpH - 12;
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+  roundRect(ctx, hpX - 2, hpY - 2, hpW + 4, hpH + 4, 8); ctx.fill();
+  ctx.fillStyle = '#1e293b';
+  roundRect(ctx, hpX, hpY, hpW, hpH, 6); ctx.fill();
+  const hpGrad = ctx.createLinearGradient(hpX, 0, hpX + hpW, 0);
+  hpGrad.addColorStop(0, '#f43f5e'); hpGrad.addColorStop(1, '#10b981');
+  ctx.fillStyle = hpGrad;
+  roundRect(ctx, hpX, hpY, hpW * Math.max(0, p.hp/p.maxHp), hpH, 6); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = '700 10px "Be Vietnam Pro", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(Math.ceil(p.hp) + ' / ' + p.maxHp, hpX + hpW/2, hpY + hpH/2);
+
+  // Weapon icons (top-right, below wave timer)
+  const icons = [];
+  for (const [id, lv] of Object.entries(p.weapons)) {
+    icons.push({ icon: WEAPON_DB[id].icon, lv, color: '#f472b6' });
+  }
+  for (const [id, lv] of Object.entries(p.passives)) {
+    icons.push({ icon: PASSIVE_DB[id].icon, lv, color: '#22d3ee' });
+  }
+  const iconSize = 22, gap = 4;
+  const cols = Math.min(6, icons.length);
+  icons.forEach((it, i) => {
+    const col = i % cols, row = Math.floor(i / cols);
+    const x = W - 12 - (col + 1) * (iconSize + gap) + gap;
+    const y = topY + xpH + 30 + row * (iconSize + gap);
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+    roundRect(ctx, x, y, iconSize, iconSize, 6); ctx.fill();
+    ctx.strokeStyle = it.color; ctx.lineWidth = 1;
+    roundRect(ctx, x, y, iconSize, iconSize, 6); ctx.stroke();
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(it.icon, x + iconSize/2, y + iconSize/2 - 2);
+    ctx.fillStyle = it.color;
+    ctx.font = '800 7px "Be Vietnam Pro", sans-serif';
+    ctx.fillText(it.lv, x + iconSize - 3, y + iconSize - 3);
+  });
+}
+
+function drawJoystick(ctx) {
+  if (LR.G.state !== 'play' || !st) return;
+  const j = st.joystick;
+  if (j.active) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(244, 114, 182, 0.55)';
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.4)';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(j.startX, j.startY, 56, 0, Math.PI*2);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(244, 114, 182, 0.9)';
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(j.curX, j.curY, 22, 0, Math.PI*2);
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawDashButton(ctx) {
+  if (LR.G.state !== 'play' || !st) return;
+  const G = LR.G;
+  const bx = G.W - 60, by = G.H - 110;
+  const p = st.player;
+  const ready = p.dashCooldown <= 0 && p.dashTimer <= 0;
+  ctx.save();
+  ctx.fillStyle = ready ? 'rgba(236, 72, 153, 0.85)' : 'rgba(30, 41, 59, 0.85)';
+  ctx.strokeStyle = ready ? '#fbcfe8' : '#475569';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(bx, by, 32, 0, Math.PI*2);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font = '900 14px "Be Vietnam Pro", sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  if (ready) {
+    ctx.fillText('⚡', bx, by - 4);
+    ctx.font = '800 8px "Be Vietnam Pro", sans-serif';
+    ctx.fillText('DASH', bx, by + 14);
+  } else {
+    ctx.font = '900 12px "Be Vietnam Pro", sans-serif';
+    ctx.fillText(p.dashCooldown.toFixed(1), bx, by);
+  }
+  ctx.restore();
+}
+
+function drawCards(ctx) {
+  const G = LR.G, W = G.W, H = G.H;
+  ctx.fillStyle = 'rgba(2, 6, 23, 0.88)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = '#fbbf24';
+  ctx.font = '900 20px "Be Vietnam Pro", sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.fillText('🍼 EM BÉ LÊN CẤP!', W/2, 20);
+  ctx.fillStyle = '#cbd5e1';
+  ctx.font = '700 12px "Be Vietnam Pro", sans-serif';
+  ctx.fillText('Chọn 1 trang bị để tiếp tục', W/2, 48);
+
+  const isNarrow = W < 720;
+  const cards = st.cardChoices;
+  st.cardRects = [];
+  const top = 80;
+  const bottom = 20;
+
+  if (isNarrow) {
+    const cardW = W - 30;
+    const cardH = (H - top - bottom - 20) / 3;
+    cards.forEach((c, i) => {
+      const x = 15, y = top + i * (cardH + 8);
+      st.cardRects.push({ x, y, w: cardW, h: cardH });
+      drawCardRect(ctx, c, x, y, cardW, cardH);
+    });
+  } else {
+    const cardW = (W - 60) / 3;
+    const cardH = H - top - bottom;
+    cards.forEach((c, i) => {
+      const x = 15 + i * (cardW + 15);
+      const y = top;
+      st.cardRects.push({ x, y, w: cardW, h: cardH });
+      drawCardRect(ctx, c, x, y, cardW, cardH);
+    });
+  }
+}
+
+function drawCardRect(ctx, card, x, y, w, h) {
+  const rc = {
+    common:    { border: '#94a3b8', bg1: '#1e293b', bg2: '#0f172a' },
+    rare:      { border: '#38bdf8', bg1: '#0c4a6e', bg2: '#0f172a' },
+    epic:      { border: '#c084fc', bg1: '#4c1d95', bg2: '#0f172a' },
+    legendary: { border: '#fbbf24', bg1: '#78350f', bg2: '#1c1917' }
+  }[card.rarity];
+  const grd = ctx.createLinearGradient(x, y, x, y + h);
+  grd.addColorStop(0, rc.bg1); grd.addColorStop(1, rc.bg2);
+  ctx.fillStyle = grd;
+  roundRect(ctx, x, y, w, h, 14); ctx.fill();
+  ctx.strokeStyle = rc.border; ctx.lineWidth = 3;
+  roundRect(ctx, x, y, w, h, 14); ctx.stroke();
+
+  const pad = 14;
+  const iconSize = Math.min(64, h * 0.28, w * 0.32);
+  const icx = x + w/2;
+  const icy = y + pad + iconSize/2;
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+  ctx.strokeStyle = rc.border; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(icx, icy, iconSize/2, 0, Math.PI*2);
+  ctx.fill(); ctx.stroke();
+  ctx.font = (iconSize*0.7) + 'px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(card.item.icon, icx, icy);
+
+  // Rarity badge
+  const badgeTxt = card.rarity.toUpperCase();
+  ctx.font = '900 9px "Be Vietnam Pro", sans-serif';
+  const bw = ctx.measureText(badgeTxt).width + 14;
+  ctx.fillStyle = rc.border;
+  roundRect(ctx, x + 10, y + 8, bw, 16, 8); ctx.fill();
+  ctx.fillStyle = '#0f172a';
+  ctx.textAlign = 'left';
+  ctx.fillText(badgeTxt, x + 17, y + 16);
+
+  const lvTxt = card.curLv === 0 ? 'MỚI' : 'Lv ' + card.curLv + '→' + (card.curLv + (card.rarity === 'legendary' ? 2 : 1));
+  ctx.font = '900 10px "Be Vietnam Pro", sans-serif';
+  ctx.fillStyle = '#fbbf24';
+  ctx.textAlign = 'right';
+  ctx.fillText(lvTxt, x + w - 10, y + 16);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '900 14px "Be Vietnam Pro", sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.fillText(card.item.name, x + w/2, icy + iconSize/2 + 8, w - 20);
+
+  ctx.font = '700 9px "Be Vietnam Pro", sans-serif';
+  ctx.fillStyle = card.item.type === 'weapon' ? '#f9a8d4' : '#67e8f9';
+  ctx.fillText(card.item.type === 'weapon' ? '🍼 VŨ KHÍ' : '🛡️ NỘI TẠI', x + w/2, icy + iconSize/2 + 28);
+
+  ctx.fillStyle = '#cbd5e1';
+  ctx.font = '600 11px "Be Vietnam Pro", sans-serif';
+  wrapText(ctx, card.item.desc, x + w/2, icy + iconSize/2 + 46, w - 20, 14);
+}
+
+function wrapText(ctx, text, cx, y, maxW, lh) {
+  const words = text.split(' ');
+  let line = '', curY = y;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (let i = 0; i < words.length; i++) {
+    const test = line ? line + ' ' + words[i] : words[i];
+    if (ctx.measureText(test).width > maxW && line) {
+      ctx.fillText(line, cx, curY);
+      curY += lh;
+      line = words[i];
+    } else line = test;
+  }
+  if (line) ctx.fillText(line, cx, curY);
 }
 
 function drawGame(ctx) {
@@ -1164,7 +1407,7 @@ function drawGame(ctx) {
   ctx.scale(layout.scale, layout.scale);
   ctx.translate(-st.camera.x, -st.camera.y);
 
-  drawWorldBackground(ctx);
+  drawWorldBg(ctx);
 
   // Aura
   if (p.weapons.aura) {
@@ -1218,10 +1461,7 @@ function drawGame(ctx) {
     ctx.restore();
   }
 
-  // Enemies
   for (const e of st.enemies) drawEnemy(ctx, e);
-
-  // Player
   drawPlayer(ctx);
 
   // Player projectiles
@@ -1317,320 +1557,30 @@ function drawGame(ctx) {
 
   ctx.restore();
 
-  // Screen-space HUD
-  drawScreenHUD(ctx);
+  // Victory overlay
+  if (st.pendingWin) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(132, 204, 22, 0.15)';
+    ctx.fillRect(0, 0, G.W, G.H);
+    ctx.fillStyle = '#fbbf24';
+    ctx.font = '900 40px "Be Vietnam Pro", sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 6;
+    ctx.strokeText('CHIẾN THẮNG!', G.W/2, G.H/2);
+    ctx.fillText('CHIẾN THẮNG!', G.W/2, G.H/2);
+    ctx.restore();
+  }
+
+  drawHUDBars(ctx);
   drawJoystick(ctx);
   drawDashButton(ctx);
 
   if (st.cardActive) drawCards(ctx);
 }
 
-function drawScreenHUD(ctx) {
-  const G = LR.G, W = G.W, H = G.H;
-  const p = st.player;
-  const topY = (G.top || 0) + 4;
-
-  // HP bar (bottom-left)
-  const hpW = Math.min(240, W * 0.42);
-  const hpH = 14;
-  const hpX = 12, hpY = H - hpH - 12;
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-  roundRect(ctx, hpX - 2, hpY - 2, hpW + 4, hpH + 4, 8);
-  ctx.fill();
-  ctx.fillStyle = '#1e293b';
-  roundRect(ctx, hpX, hpY, hpW, hpH, 6);
-  ctx.fill();
-  const hpRatio = Math.max(0, p.hp / p.maxHp);
-  const hpGrad = ctx.createLinearGradient(hpX, 0, hpX + hpW, 0);
-  hpGrad.addColorStop(0, '#f43f5e');
-  hpGrad.addColorStop(1, '#10b981');
-  ctx.fillStyle = hpGrad;
-  roundRect(ctx, hpX, hpY, hpW * hpRatio, hpH, 6);
-  ctx.fill();
-  ctx.fillStyle = '#fff';
-  ctx.font = '700 10px "Be Vietnam Pro", sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(Math.ceil(p.hp) + ' / ' + p.maxHp, hpX + hpW/2, hpY + hpH/2);
-
-  // XP bar (top, below HUD)
-  const xpW = Math.min(W - 24, 340);
-  const xpH = 10;
-  const xpX = (W - xpW) / 2, xpY = topY;
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-  roundRect(ctx, xpX - 2, xpY - 2, xpW + 4, xpH + 4, 6);
-  ctx.fill();
-  ctx.fillStyle = '#1e293b';
-  roundRect(ctx, xpX, xpY, xpW, xpH, 4);
-  ctx.fill();
-  const xpGrad = ctx.createLinearGradient(xpX, 0, xpX + xpW, 0);
-  xpGrad.addColorStop(0, '#f472b6');
-  xpGrad.addColorStop(1, '#38bdf8');
-  ctx.fillStyle = xpGrad;
-  roundRect(ctx, xpX, xpY, xpW * Math.min(1, p.xp / p.xpToNext), xpH, 4);
-  ctx.fill();
-  ctx.fillStyle = '#fff';
-  ctx.font = '800 8px "Be Vietnam Pro", sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(p.xp + ' / ' + p.xpToNext + ' XP', xpX + xpW/2, xpY + xpH/2);
-
-  // Wave + timer (top-right of xp bar row)
-  const waveTxt = 'ĐỢT ' + st.wave + '  ·  ' + Math.max(0, Math.ceil(st.waveTimer)) + 's';
-  ctx.font = '900 11px "Be Vietnam Pro", sans-serif';
-  const wtw = ctx.measureText(waveTxt).width + 16;
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-  roundRect(ctx, W - wtw - 10, xpY - 1, wtw, xpH + 6, 6);
-  ctx.fill();
-  ctx.fillStyle = '#22d3ee';
-  ctx.textAlign = 'center';
-  ctx.fillText(waveTxt, W - wtw/2 - 10, xpY + xpH/2 + 2);
-
-  // Boss bar
-  if (st.activeBoss) {
-    const bw = Math.min(360, W * 0.65), bh = 14;
-    const bx = (W - bw)/2, by = topY + xpH + 12;
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-    roundRect(ctx, bx - 3, by - 3, bw + 6, bh + 6, 8);
-    ctx.fill();
-    ctx.fillStyle = '#1e293b';
-    roundRect(ctx, bx, by, bw, bh, 6);
-    ctx.fill();
-    const boss = st.activeBoss;
-    const bg = ctx.createLinearGradient(bx, 0, bx + bw, 0);
-    bg.addColorStop(0, '#84cc16'); bg.addColorStop(1, '#22d3ee');
-    ctx.fillStyle = bg;
-    roundRect(ctx, bx, by, bw * Math.max(0, boss.hp / boss.maxHp), bh, 6);
-    ctx.fill();
-    ctx.fillStyle = '#fff';
-    ctx.font = '900 9px "Be Vietnam Pro", sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('🦠 ' + boss.name + '  ' + Math.ceil(boss.hp) + '/' + Math.ceil(boss.maxHp), W/2, by + bh/2);
-  }
-
-  // Equipped icons (bottom-right compact)
-  const wx = W - 10;
-  const icons = [];
-  for (const [id, lv] of Object.entries(p.weapons)) {
-    icons.push({ icon: WEAPON_DB[id].icon, lv, color: '#f472b6' });
-  }
-  for (const [id, lv] of Object.entries(p.passives)) {
-    icons.push({ icon: PASSIVE_DB[id].icon, lv, color: '#22d3ee' });
-  }
-  const iconSize = 22, gap = 4;
-  const cols = Math.min(6, icons.length);
-  icons.forEach((it, i) => {
-    const col = i % cols, row = Math.floor(i / cols);
-    const x = wx - (col + 1) * (iconSize + gap) + gap;
-    const y = H - 12 - (row + 1) * (iconSize + gap) + gap - 20;
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-    roundRect(ctx, x, y, iconSize, iconSize, 6);
-    ctx.fill();
-    ctx.strokeStyle = it.color;
-    ctx.lineWidth = 1;
-    roundRect(ctx, x, y, iconSize, iconSize, 6);
-    ctx.stroke();
-    ctx.font = '12px sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(it.icon, x + iconSize/2, y + iconSize/2 - 2);
-    ctx.fillStyle = it.color;
-    ctx.font = '800 7px "Be Vietnam Pro", sans-serif';
-    ctx.fillText(it.lv, x + iconSize - 3, y + iconSize - 3);
-  });
-}
-
-function drawJoystick(ctx) {
-  if (LR.G.state !== 'play') return;
-  const j = st.joystick;
-  if (j.active) {
-    ctx.save();
-    ctx.strokeStyle = 'rgba(244, 114, 182, 0.55)';
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.4)';
-    ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(j.startX, j.startY, 56, 0, Math.PI*2);
-    ctx.fill(); ctx.stroke();
-    ctx.fillStyle = 'rgba(244, 114, 182, 0.9)';
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath(); ctx.arc(j.curX, j.curY, 22, 0, Math.PI*2);
-    ctx.fill(); ctx.stroke();
-    ctx.restore();
-  }
-}
-
-function drawDashButton(ctx) {
-  if (LR.G.state !== 'play' || !layout) return;
-  const G = LR.G;
-  const bx = G.W - 60, by = G.H - 110;
-  const p = st.player;
-  const ready = p.dashCooldown <= 0 && p.dashTimer <= 0;
-
-  ctx.save();
-  ctx.fillStyle = ready ? 'rgba(236, 72, 153, 0.85)' : 'rgba(30, 41, 59, 0.85)';
-  ctx.strokeStyle = ready ? '#fbcfe8' : '#475569';
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.arc(bx, by, 32, 0, Math.PI*2);
-  ctx.fill(); ctx.stroke();
-
-  ctx.fillStyle = '#fff';
-  ctx.font = '900 14px "Be Vietnam Pro", sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  if (ready) {
-    ctx.fillText('⚡', bx, by - 4);
-    ctx.font = '800 8px "Be Vietnam Pro", sans-serif';
-    ctx.fillText('DASH', bx, by + 14);
-  } else {
-    ctx.font = '900 12px "Be Vietnam Pro", sans-serif';
-    ctx.fillText(p.dashCooldown.toFixed(1), bx, by);
-  }
-  ctx.restore();
-}
-
-function drawCards(ctx) {
-  const G = LR.G, W = G.W, H = G.H;
-  ctx.fillStyle = 'rgba(2, 6, 23, 0.88)';
-  ctx.fillRect(0, 0, W, H);
-
-  // Title
-  ctx.fillStyle = '#fbbf24';
-  ctx.font = '900 20px "Be Vietnam Pro", sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'top';
-  ctx.fillText('🍼 EM BÉ LÊN CẤP!', W/2, 20);
-  ctx.fillStyle = '#cbd5e1';
-  ctx.font = '700 12px "Be Vietnam Pro", sans-serif';
-  ctx.fillText('Chọn 1 trang bị để tiếp tục', W/2, 48);
-
-  // Layout cards
-  const isNarrow = W < 720;
-  const cards = st.cardChoices;
-  st.cardRects = [];
-  const top = 80;
-  const bottom = 20;
-
-  if (isNarrow) {
-    const cardW = W - 30;
-    const cardH = (H - top - bottom - 20) / 3;
-    cards.forEach((c, i) => {
-      const x = 15, y = top + i * (cardH + 8);
-      st.cardRects.push({ x, y, w: cardW, h: cardH });
-      drawCardRect(ctx, c, x, y, cardW, cardH);
-    });
-  } else {
-    const cardW = (W - 60) / 3;
-    const cardH = H - top - bottom;
-    cards.forEach((c, i) => {
-      const x = 15 + i * (cardW + 15);
-      const y = top;
-      st.cardRects.push({ x, y, w: cardW, h: cardH });
-      drawCardRect(ctx, c, x, y, cardW, cardH);
-    });
-  }
-}
-
-function drawCardRect(ctx, card, x, y, w, h) {
-  const rarityColors = {
-    common: { border: '#94a3b8', bg1: '#1e293b', bg2: '#0f172a' },
-    rare: { border: '#38bdf8', bg1: '#0c4a6e', bg2: '#0f172a' },
-    epic: { border: '#c084fc', bg1: '#4c1d95', bg2: '#0f172a' },
-    legendary: { border: '#fbbf24', bg1: '#78350f', bg2: '#1c1917' }
-  };
-  const rc = rarityColors[card.rarity];
-  const grd = ctx.createLinearGradient(x, y, x, y + h);
-  grd.addColorStop(0, rc.bg1);
-  grd.addColorStop(1, rc.bg2);
-  ctx.fillStyle = grd;
-  roundRect(ctx, x, y, w, h, 14);
-  ctx.fill();
-  ctx.strokeStyle = rc.border;
-  ctx.lineWidth = 3;
-  roundRect(ctx, x, y, w, h, 14);
-  ctx.stroke();
-
-  const pad = 14;
-  // Icon circle
-  const iconSize = Math.min(64, h * 0.28, w * 0.32);
-  const icx = x + w/2;
-  const icy = y + pad + iconSize/2;
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-  ctx.strokeStyle = rc.border;
-  ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(icx, icy, iconSize/2, 0, Math.PI*2);
-  ctx.fill(); ctx.stroke();
-  ctx.font = (iconSize*0.7) + 'px sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(card.item.icon, icx, icy);
-
-  // Rarity badge + level
-  const badgeTxt = card.rarity.toUpperCase();
-  ctx.font = '900 9px "Be Vietnam Pro", sans-serif';
-  const bw = ctx.measureText(badgeTxt).width + 14;
-  ctx.fillStyle = rc.border;
-  roundRect(ctx, x + 10, y + 8, bw, 16, 8);
-  ctx.fill();
-  ctx.fillStyle = card.rarity === 'common' || card.rarity === 'epic' ? '#0f172a' : '#0f172a';
-  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  ctx.fillText(badgeTxt, x + 17, y + 16);
-
-  const lvTxt = card.curLv === 0 ? 'MỚI' : 'Lv ' + card.curLv + '→' + (card.curLv + (card.rarity === 'legendary' ? 2 : 1));
-  ctx.font = '900 10px "Be Vietnam Pro", sans-serif';
-  ctx.fillStyle = '#fbbf24';
-  ctx.textAlign = 'right';
-  ctx.fillText(lvTxt, x + w - 10, y + 16);
-
-  // Name
-  ctx.fillStyle = '#ffffff';
-  ctx.font = '900 14px "Be Vietnam Pro", sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-  ctx.fillText(card.item.name, x + w/2, icy + iconSize/2 + 8, w - 20);
-
-  // Type
-  ctx.font = '700 9px "Be Vietnam Pro", sans-serif';
-  ctx.fillStyle = card.item.type === 'weapon' ? '#f9a8d4' : '#67e8f9';
-  ctx.fillText(card.item.type === 'weapon' ? '🍼 VŨ KHÍ' : '🛡️ NỘI TẠI', x + w/2, icy + iconSize/2 + 28);
-
-  // Desc
-  ctx.fillStyle = '#cbd5e1';
-  ctx.font = '600 11px "Be Vietnam Pro", sans-serif';
-  const descY = icy + iconSize/2 + 46;
-  wrapText(ctx, card.item.desc, x + w/2, descY, w - 20, 14);
-}
-
-function wrapText(ctx, text, cx, y, maxW, lh) {
-  const words = text.split(' ');
-  let line = '';
-  let curY = y;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'top';
-  for (let i = 0; i < words.length; i++) {
-    const test = line ? line + ' ' + words[i] : words[i];
-    if (ctx.measureText(test).width > maxW && line) {
-      ctx.fillText(line, cx, curY);
-      curY += lh;
-      line = words[i];
-    } else line = test;
-  }
-  if (line) ctx.fillText(line, cx, curY);
-}
-
 /* ================= INPUT ================= */
-function onKeyDown(e) {
-  if (!st) return;
-  st.keys[e.code] = true;
-  if (e.code === 'Space' && LR.G.state === 'play' && !st.cardActive) {
-    e.preventDefault();
-    triggerDash();
-  }
-  if ((e.code === 'KeyW' || e.code === 'KeyA' || e.code === 'KeyS' || e.code === 'KeyD' ||
-       e.code.startsWith('Arrow') || e.code === 'Space') && LR.G.state === 'play') {
-    e.preventDefault();
-  }
-}
-function onKeyUp(e) {
-  if (!st) return;
-  st.keys[e.code] = false;
-}
-
 function triggerDash() {
+  if (LR.G.state !== 'play' || !st) return;
   const p = st.player;
   if (p.dashCooldown > 0 || p.dashTimer > 0) return;
   let dx = p.vx, dy = p.vy;
@@ -1646,7 +1596,7 @@ function triggerDash() {
   p.dashTimer = 0.22;
   p.invulnTimer = 0.35;
   p.dashCooldown = p.dashMaxCd;
-  Sound.sfx.zip && Sound.sfx.zip();
+  sfxDash();
   for (let i = 0; i < 10; i++) {
     const ang = (i * Math.PI*2) / 10;
     spawnProjectile({
@@ -1655,6 +1605,23 @@ function triggerDash() {
       range: 280, knockback: 18
     });
   }
+}
+
+function onKeyDown(e) {
+  if (!st) return;
+  st.keys[e.code] = true;
+  if (e.code === 'Space' && LR.G.state === 'play' && !st.cardActive) {
+    e.preventDefault();
+    Sound.init();
+    triggerDash();
+  }
+  if (LR.G.state === 'play' && ['KeyW','KeyA','KeyS','KeyD','Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) {
+    e.preventDefault();
+  }
+}
+function onKeyUp(e) {
+  if (!st) return;
+  st.keys[e.code] = false;
 }
 
 function onPointerDown(x, y, e) {
@@ -1680,7 +1647,7 @@ function onPointerDown(x, y, e) {
     return;
   }
 
-  // Joystick start
+  // Joystick
   if (!st.joystick.active) {
     st.joystick.active = true;
     st.joystick.pointerId = e && e.pointerId != null ? e.pointerId : 'default';
@@ -1720,23 +1687,26 @@ const mod = {
     computeLayout();
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    Sound.init();
   },
   exit() {
     window.removeEventListener('keydown', onKeyDown);
     window.removeEventListener('keyup', onKeyUp);
-    if (st) { st.joystick.active = false; }
+    if (st) st.joystick.active = false;
+    st = null;
   },
   resize() { computeLayout(); },
   update(dt) { update(dt); },
   draw() { drawGame(LR.G.ctx); },
   pointerDown(x, y, e) { onPointerDown(x, y, e); },
-  pointerUp(x, y, e) { onPointerUp(); },
   pointerMove(x, y, e) { onPointerMove(x, y); },
+  pointerUp(x, y, e) { onPointerUp(); },
   legend(el) {
     el.innerHTML = '<p class="note" style="margin:8px 0 0">' +
-      '💡 Di chuyển bằng <b>WASD / Mũi tên</b> hoặc <b>kéo chạm</b>. Nhấn <b>Space</b> hoặc nút ⚡ để lướt. ' +
-      'Tiêu diệt <b>siêu vi khuẩn ở đợt ' + WIN_BOSS_WAVE + '</b> để giành chiến thắng! ' +
-      '⚠️ Cẩn thận vi khuẩn <b>vàng</b> (làm chậm bé) và <b>hồng</b> (tách đôi khi chết).</p>';
+      '💡 <b>WASD / Mũi tên</b> hoặc <b>kéo chạm</b> để di chuyển. Nhấn <b>Space</b> hoặc nút ⚡ để lướt. ' +
+      'Tiêu diệt <b>siêu vi khuẩn ở đợt 3</b> để giành chiến thắng! ' +
+      '⚠️ Cẩn thận vi khuẩn <b style="color:#fde047">VÀNG</b> (làm chậm bé) và ' +
+      '<b style="color:#f472b6">HỒNG</b> (tách đôi khi chết).</p>';
   }
 };
 
@@ -1744,15 +1714,15 @@ const mod = {
 const LEVEL = {
   id: '16-baby-survivors',
   title: 'Em bé đại chiến vi khuẩn',
-  desc: 'Điều khiển bé Vũ tiêu diệt vi khuẩn! Di chuyển, bắn tự động, nhặt XP để lên cấp và chọn nâng cấp. Đánh bại siêu vi khuẩn đợt 3 để qua ải.',
+  desc: 'Điều khiển bé Vũ diệt vi khuẩn! Di chuyển, bắn tự động, nhặt XP lên cấp và chọn nâng cấp. Đánh bại siêu vi khuẩn đợt 3 để qua ải.',
   rules: [
-    'Di chuyển: WASD / Phím mũi tên hoặc kéo chạm trên màn hình',
+    'Di chuyển: WASD / Mũi tên hoặc kéo chạm trên màn hình',
     'Vũ khí bắn tự động vào vi khuẩn gần nhất',
     'Nhặt XP để lên cấp → chọn nâng cấp vũ khí hoặc đề kháng',
     'Nhấn Space (hoặc nút ⚡) để lướt né đòn',
     '⚠️ Vi khuẩn VÀNG chạy nhanh, chạm sẽ làm CHẬM bé',
-    '⚠️ Vi khuẩn HỒNG tách thành 2 con nhỏ hơn khi bị diệt',
-    'Đánh bại Siêu Vi Khuẩn ở đợt ' + WIN_BOSS_WAVE + ' để qua ải'
+    '⚠️ Vi khuẩn HỒNG tách thành 2 con nhỏ khi bị diệt',
+    'Đánh bại Siêu Vi Khuẩn ở đợt 3 để qua ải'
   ],
   status: 'ready',
   pad: false,
