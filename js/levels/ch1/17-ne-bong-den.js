@@ -91,7 +91,8 @@ class LaserBlockObstacle {
   checkCollision(px, py, pr) {
     if (!this.activated) return { hit: false, minDist: 999 };
     const remain = (this.warnDuration + this.activeDuration) - this.timer;
-    if (remain < 0.08) return { hit: false, minDist: 999 };
+    // FIX #2: tắt va chạm cùng lúc với visual fade (0.15s khớp với fadeOut)
+    if (remain < 0.15) return { hit: false, minDist: 999 };
     const dx = px - this.cx, dy = py - this.cy;
     const cos = Math.cos(-this.angle), sin = Math.sin(-this.angle);
     const lx = dx * cos - dy * sin;
@@ -165,7 +166,8 @@ class BouncingOrbObstacle {
   checkCollision(px, py, pr) {
     if (!this.activated) return { hit: false, minDist: 999 };
     const remain = (this.warnDuration + this.lifeDuration) - this.timer;
-    if (remain < 0.1) return { hit: false, minDist: 999 };
+    // FIX #3: tắt va chạm cùng lúc với visual scale-in
+    if (remain < 0.2) return { hit: false, minDist: 999 };
     const d = Math.hypot(px - this.x, py - this.y) - (this.radius + pr);
     return { hit: d < 0, minDist: d };
   }
@@ -421,7 +423,6 @@ function update(dt) {
   if (!st) return;
   if (LR.G.state !== 'play') return;
 
-  // Visual effects
   if (st.shakeTime > 0) st.shakeTime = Math.max(0, st.shakeTime - dt);
   if (st.bgFlash > 0) st.bgFlash = Math.max(0, st.bgFlash - dt * 3.5);
 
@@ -440,7 +441,6 @@ function update(dt) {
 
   if (st.gameOver) return;
 
-  // Game logic
   st.survivalTime += dt;
   const difficulty = Math.min(6, st.survivalTime / 12);
   sfxHeartbeat(dt, difficulty);
@@ -453,11 +453,9 @@ function update(dt) {
 
   updatePlayer(dt);
 
-  // Spawn waves
   st.waveTimer -= dt;
   if (st.waveTimer <= 0) spawnLogicalPattern(difficulty);
 
-  // Update obstacles
   for (let i = st.obstacles.length - 1; i >= 0; i--) {
     const obs = st.obstacles[i];
     obs.update(dt, st.worldW, st.worldH);
@@ -626,9 +624,12 @@ function drawContractingRing(ctx, obs) {
   ctx.lineWidth = lineW;
   ctx.lineCap = 'butt';
   ctx.beginPath();
-  const startA = -(obs.gapAngle + obs.gapHalfWidth);
-  const endA = -obs.gapAngle + obs.gapHalfWidth;
-  ctx.arc(obs.cx, obs.cy, midR, startA, endA, true);
+  // FIX #1: khe hở phải khớp với checkCollision (gapAngle ± halfWidth).
+  // Trước đây dùng -(gapAngle ± half) + anticlockwise=true → khe bị mirror → player thấy khe
+  // ở phía đối diện collision thật.
+  const startA = obs.gapAngle + obs.gapHalfWidth;
+  const endA = obs.gapAngle + Math.PI * 2 - obs.gapHalfWidth;
+  ctx.arc(obs.cx, obs.cy, midR, startA, endA, false);
   ctx.stroke();
 }
 
@@ -660,7 +661,6 @@ function render() {
   const dpr = G.dpr || 1;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  // Bg flash
   const flash = st.bgFlash;
   const r = Math.round((0.972 + flash * 0.025) * 255);
   const g = Math.round((0.980 - flash * 0.08) * 255);
@@ -668,7 +668,6 @@ function render() {
   ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
   ctx.fillRect(0, 0, G.W, G.H);
 
-  // Shake
   let sx = 0, sy = 0;
   if (st.shakeTime > 0) {
     sx = (Math.random() * 2 - 1) * st.shakeMagnitude;
@@ -692,7 +691,6 @@ function render() {
     ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
   }
 
-  // Player
   if (!st.gameOver) {
     for (let i = st.player.trail.length - 1; i >= 1; i--) {
       const t = st.player.trail[i];
@@ -700,14 +698,12 @@ function render() {
       ctx.fillStyle = rgb([239, 68, 68], ratio * 0.28);
       ctx.beginPath(); ctx.arc(t.x, t.y, st.player.radius * ratio * 0.85, 0, Math.PI * 2); ctx.fill();
     }
-    // Glow
     const glowR = st.player.radius * 3.1;
     const grad = ctx.createRadialGradient(st.player.x, st.player.y, 0, st.player.x, st.player.y, glowR);
     grad.addColorStop(0, 'rgba(239,68,68,0.35)');
     grad.addColorStop(1, 'rgba(239,68,68,0)');
     ctx.fillStyle = grad;
     ctx.beginPath(); ctx.arc(st.player.x, st.player.y, glowR, 0, Math.PI * 2); ctx.fill();
-    // Dot
     ctx.fillStyle = 'rgb(239,68,68)';
     ctx.beginPath(); ctx.arc(st.player.x, st.player.y, st.player.radius, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
@@ -716,7 +712,6 @@ function render() {
 
   ctx.restore();
 
-  // Floating texts in screen space
   for (const f of st.floatingTexts) {
     const alpha = Math.max(0, f.life / f.maxLife);
     const px = cx + f.x * scale;
@@ -825,7 +820,7 @@ const LEVEL = {
   desc: 'Điều khiển chấm đỏ né các khối đen đang quét tới. Sượt qua mép để nhân điểm. Sống sót 60 giây để qua ải!',
   rules: [
     'Di chuyển bằng WASD / Mũi tên, hoặc kéo chạm / chuột trên màn hình',
-    'Khối đen có <b>cảnh báo đỏ</b> trước khi kích hoạt — quan sát kỹ!',
+    'Khối đen có cảnh báo đỏ trước khi kích hoạt — quan sát kỹ!',
     'Sượt qua mép khối đen để nhận +điểm và tăng chuỗi combo',
     'Chuỗi combo giảm dần nếu 3.5 giây không sượt qua khối nào',
     'Va vào khối đen = thua cuộc',
