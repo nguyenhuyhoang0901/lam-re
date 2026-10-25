@@ -1,423 +1,679 @@
+/* js/levels/ch1/14-nhay-da.js — Ải 14: Nhảy đá qua sông (chuyển từ rock-jump2) */
 (function(){
 'use strict';
 const LR = window.LR;
+const Sound = LR.Sound;
+const {clamp} = LR.util;
 
-// Định nghĩa ải Nhảy Đá
-const mod = {
-    title: "Căn Lực Nhảy Đá",
-    desc: "Giữ Space hoặc chạm giữ màn hình để tích lực nhảy qua các hòn đá bồng bềnh.",
-    rules: [
-        "Chạm giữ màn hình hoặc phím Space để tích lực nhảy.",
-        "Nhả ra để nhảy sang hòn đá tiếp theo.",
-        "Hạ cánh chuẩn tâm hoặc bấu mép thành công để nhận điểm combo cao."
-    ],
-    pad: false, // Không dùng d-pad ảo vì dùng cơ chế giữ màn hình
-    actLabel: "NHẢY",
+const CHARACTER_CONFIG = { width: 46, height: 52 };
+const PHYSICS = {
+  gravity: 1180,
+  minJumpDist: 85,
+  maxJumpDist: 480,
+  maxChargeTime: 0.92,
+  sweetSpotRadius: 9,
+  edgeSnapTolerance: 13
+};
+const TARGET_SCORE = 15;
+const BASE_STONE_WIDTH = 90;
 
-    // Khởi tạo trạng thái khi vào ải
-    enter(opt) {
-        this.initGame();
-    },
+/* ---- state ---- */
+let gs = null, player = null, stones = [], particles = [], floatingTexts = [], clouds = [];
 
-    exit() {
-        if (this.chargeOsc) {
-            try { this.chargeOsc.stop(); this.chargeOsc.disconnect(); } catch(e){}
-            this.chargeOsc = null;
-        }
-    },
+function initClouds() {
+  clouds = [];
+  for (let i = 0; i < 8; i++) {
+    clouds.push({
+      x: Math.random() * 1200,
+      y: 30 + Math.random() * 200,
+      w: 70 + Math.random() * 80,
+      speed: 6 + Math.random() * 12,
+      alpha: 0.08 + Math.random() * 0.12
+    });
+  }
+}
 
-    initGame() {
-        this.PHYSICS = {
-            gravity: 1180,
-            minJumpDist: 85,
-            maxJumpDist: 480,
-            maxChargeTime: 0.92,
-            jumpFlightTime: 0.62,
-            sweetSpotRadius: 9,
-            edgeSnapTolerance: 13
-        };
+function getBaseGroundY() {
+  const G = LR.G, h = G.H, top = G.top || 0;
+  const minY = top + 80;
+  const maxY = Math.max(minY, h - 60);
+  const target = h * 0.72;
+  return Math.max(minY, Math.min(maxY, target));
+}
 
-        this.gameState = {
-            score: 0,
-            combo: 1,
-            baseStoneWidth: 90,
-            cameraX: 0,
-            targetCameraX: 0,
-            time: 0,
-            edgeSnapEnabled: true
-        };
+function createStone(x, width, isFirst = false) {
+  const baseY = getBaseGroundY();
+  const yOffset = isFirst ? 0 : (Math.random() * 70 - 35);
+  return {
+    x, y: baseY + yOffset, baseY: baseY + yOffset, yOffset,
+    w: width,
+    h: 48 + Math.random() * 24,
+    bobPhase: Math.random() * Math.PI * 2,
+    depressY: 0,
+    crystalCollected: false
+  };
+}
 
-        this.player = {
-            x: 115, y: 0, vx: 0, vy: 0,
-            state: 'IDLE',
-            chargeTime: 0,
-            chargeDir: 1,
-            scaleX: 1, scaleY: 1,
-            rotation: 0,
-            climbProgress: 0,
-            climbStartX: 0, climbTargetX: 0
-        };
+function placePlayerOnStone(stone) {
+  player.x = stone.x;
+  player.y = stone.y;
+  player.vx = 0; player.vy = 0;
+  player.state = 'IDLE';
+  player.chargeTime = 0;
+  player.scaleX = 1; player.scaleY = 1;
+  player.rotation = 0;
+  player.climbProgress = 0;
+  player.climbStartX = 0;
+  player.climbTargetX = 0;
+}
 
-        this.stones = [];
-        this.particles = [];
-        this.floatingTexts = [];
-        this.clouds = [];
-        this.initClouds();
+function spawnNextStone() {
+  const last = stones[stones.length - 1];
+  const minGap = 170, maxGap = 445;
+  const dist = minGap + Math.random() * (maxGap - minGap);
+  const newWidth = 46 + Math.random() * 58;
+  stones.push(createStone(last.x + dist, newWidth));
+  if (stones.length > 5) stones.shift();
+}
 
-        const firstStone = this.createStone(115, this.gameState.baseStoneWidth, true);
-        this.stones.push(firstStone);
-        this.spawnNextStone();
-        this.placePlayerOnStone(this.stones[0]);
-    },
+function reset() {
+  gs = { score: 0, combo: 1, maxCombo: 1, cameraX: 0, targetCameraX: 0, time: 0, chargeSoundTimer: 0 };
+  player = {
+    x: 110, y: 0, vx: 0, vy: 0,
+    state: 'IDLE',
+    chargeTime: 0, chargeDir: 1,
+    scaleX: 1, scaleY: 1, rotation: 0,
+    climbProgress: 0, climbStartX: 0, climbTargetX: 0
+  };
+  stones = [];
+  particles = [];
+  floatingTexts = [];
+  const first = createStone(115, BASE_STONE_WIDTH, true);
+  stones.push(first);
+  spawnNextStone();
+  placePlayerOnStone(stones[0]);
+  gs.cameraX = stones[0].x - 115;
+  gs.targetCameraX = gs.cameraX;
+  updateHUD();
+}
 
-    initClouds() {
-        for (let i = 0; i < 8; i++) {
-            this.clouds.push({
-                x: Math.random() * 1200,
-                y: 30 + Math.random() * 200,
-                w: 70 + Math.random() * 80,
-                speed: 6 + Math.random() * 12,
-                alpha: 0.08 + Math.random() * 0.12
-            });
-        }
-    },
+function getChargeRatio() {
+  return clamp(player.chargeTime / PHYSICS.maxChargeTime, 0, 1);
+}
 
-    getBaseGroundY() {
-        const h = LR.G.H;
-        const minY = 70;
-        const maxY = Math.max(minY, h - 60);
-        return Math.max(minY, Math.min(maxY, h * 0.68));
-    },
+function calculateJumpVelocities(ratio) {
+  const targetDist = PHYSICS.minJumpDist + ratio * (PHYSICS.maxJumpDist - PHYSICS.minJumpDist);
+  const next = stones[1];
+  const flightTime = 0.42 + ratio * 0.36;
+  const vx = targetDist / flightTime;
+  const deltaY = next ? (next.baseY - player.y) : 0;
+  const vy = (deltaY - 0.5 * PHYSICS.gravity * flightTime * flightTime) / flightTime;
+  return { vx, vy, targetDist, flightTime };
+}
 
-    createStone(x, width, isFirst = false) {
-        const baseY = this.getBaseGroundY();
-        const yOffset = isFirst ? 0 : (Math.random() * 70 - 35);
-        return {
-            x, baseY: baseY + yOffset, y: baseY + yOffset, yOffset,
-            w: width, h: 48 + Math.random() * 24,
-            bobPhase: Math.random() * Math.PI * 2,
-            depressY: 0,
-            crystalCollected: false
-        };
-    },
+function updateHUD() {
+  LR.G.hud.set([
+    { l: 'Điểm', v: gs.score + '/' + TARGET_SCORE },
+    { l: 'Combo', v: 'x' + gs.combo }
+  ]);
+}
 
-    placePlayerOnStone(stone) {
-        this.player.x = stone.x;
-        this.player.y = stone.y;
-        this.player.vx = 0; this.player.vy = 0;
-        this.player.state = 'IDLE';
-        this.player.chargeTime = 0;
-        this.player.scaleX = 1; this.player.scaleY = 1;
-        this.player.rotation = 0;
-    },
+function startCharging() {
+  if (player.state !== 'IDLE') return;
+  player.state = 'CHARGING';
+  player.chargeTime = 0;
+  player.chargeDir = 1;
+  gs.chargeSoundTimer = 0;
+  Sound.tone('triangle', 220, 320, .06, .04);
+}
 
-    spawnNextStone() {
-        const lastStone = this.stones[this.stones.length - 1];
-        const dist = 170 + Math.random() * 275;
-        const newWidth = 46 + Math.random() * 58;
-        this.stones.push(this.createStone(lastStone.x + dist, newWidth, false));
-        if (this.stones.length > 5) this.stones.shift();
-    },
+function releaseJump() {
+  if (player.state !== 'CHARGING') return;
+  if (LR.G.state !== 'play') {
+    // Bị pause/thoát giữa lúc tích — huỷ tích, không nhảy
+    player.state = 'IDLE';
+    player.chargeTime = 0;
+    if (stones[0]) stones[0].depressY = 0;
+    player.scaleX = 1; player.scaleY = 1;
+    return;
+  }
+  const ratio = getChargeRatio();
+  const { vx, vy } = calculateJumpVelocities(ratio);
+  player.vx = vx;
+  player.vy = vy;
+  player.state = 'JUMPING';
+  player.scaleX = 0.78;
+  player.scaleY = 1.28;
+  if (stones[0]) stones[0].depressY = 0;
+  spawnParticles(player.x, player.y, '#38bdf8', 12, 120);
+  Sound.sfx.zip();
+}
 
-    getChargeRatio() {
-        return Math.min(1, Math.max(0, this.player.chargeTime / this.PHYSICS.maxChargeTime));
-    },
+function onKeyDown(e) {
+  if (e.code !== 'Space') return;
+  if (LR.G.state !== 'play') return;
+  e.preventDefault();
+  startCharging();
+}
+function onKeyUp(e) {
+  if (e.code !== 'Space') return;
+  e.preventDefault();
+  releaseJump();
+}
 
-    calculateJumpVelocities(chargeRatio) {
-        const targetDist = this.PHYSICS.minJumpDist + chargeRatio * (this.PHYSICS.maxJumpDist - this.PHYSICS.minJumpDist);
-        const nextStone = this.stones[1];
-        const flightTime = 0.42 + chargeRatio * 0.36;
-        const vx = targetDist / flightTime;
-        const deltaY = nextStone ? (nextStone.baseY - this.player.y) : 0;
-        const vy = (deltaY - 0.5 * this.PHYSICS.gravity * flightTime * flightTime) / flightTime;
-        return { vx, vy, targetDist, flightTime };
-    },
+/* ---- update ---- */
+function update(dt) {
+  gs.time += dt;
+  clouds.forEach(c => {
+    c.x -= c.speed * dt;
+    if (c.x + c.w < 0) c.x = LR.G.W + 60;
+  });
+  gs.cameraX += (gs.targetCameraX - gs.cameraX) * Math.min(1, dt * 7.5);
 
-    startCharging() {
-        if (this.player.state !== 'IDLE') return;
-        this.player.state = 'CHARGING';
-        this.player.chargeTime = 0;
-        this.player.chargeDir = 1;
-    },
+  stones.forEach((s, idx) => {
+    if (idx === 0 && (player.state === 'IDLE' || player.state === 'CHARGING')) {
+      s.y = s.baseY + s.depressY;
+    } else {
+      s.y = s.baseY + Math.sin(gs.time * 2.2 + s.bobPhase) * 3.5;
+    }
+  });
 
-    releaseJump() {
-        if (this.player.state !== 'CHARGING') return;
-        const ratio = this.getChargeRatio();
-        const { vx, vy } = this.calculateJumpVelocities(ratio);
-        this.player.vx = vx;
-        this.player.vy = vy;
-        this.player.state = 'JUMPING';
-        this.player.scaleX = 0.78;
-        this.player.scaleY = 1.28;
-        if (this.stones[0]) this.stones[0].depressY = 0;
-        this.spawnParticles(this.player.x, this.player.y, '#38bdf8', 12, 120);
-        LR.Sound.sfx.swing();
-    },
+  if (player.state === 'IDLE') {
+    player.y = stones[0].y;
+    player.scaleX += (1 - player.scaleX) * Math.min(1, dt * 14);
+    player.scaleY += (1 - player.scaleY) * Math.min(1, dt * 14);
+  } else if (player.state === 'CHARGING') {
+    player.chargeTime += dt * player.chargeDir;
+    if (player.chargeTime >= PHYSICS.maxChargeTime) {
+      player.chargeTime = PHYSICS.maxChargeTime;
+      player.chargeDir = -1;
+    } else if (player.chargeTime <= 0.05 && player.chargeDir === -1) {
+      player.chargeTime = 0.05;
+      player.chargeDir = 1;
+    }
+    const ratio = getChargeRatio();
+    // Tick âm thanh tăng dần theo lực
+    gs.chargeSoundTimer += dt;
+    if (gs.chargeSoundTimer > 0.12) {
+      gs.chargeSoundTimer = 0;
+      Sound.tone('triangle', 300 + ratio * 500, 300 + ratio * 500, .04, .03);
+    }
+    player.scaleY = 1 - ratio * 0.36;
+    player.scaleX = 1 + ratio * 0.28;
+    stones[0].depressY = ratio * 9;
+    player.y = stones[0].y;
+    if (Math.random() < 0.35 + ratio * 0.5) {
+      const color = ratio > 0.75 ? '#f43f5e' : (ratio > 0.4 ? '#fbbf24' : '#38bdf8');
+      particles.push({
+        x: player.x + (Math.random() - 0.5) * 34,
+        y: player.y - 2,
+        vx: (Math.random() - 0.5) * 30,
+        vy: -30 - Math.random() * 50,
+        radius: 2 + Math.random() * 2.5,
+        color, alpha: 1, life: 0.35
+      });
+    }
+  } else if (player.state === 'JUMPING') {
+    const prevY = player.y;
+    player.x += player.vx * dt;
+    player.y += player.vy * dt;
+    player.vy += PHYSICS.gravity * dt;
+    player.scaleX += (1 - player.scaleX) * Math.min(1, dt * 8);
+    player.scaleY += (1 - player.scaleY) * Math.min(1, dt * 8);
+    if (player.vy > 0) checkLanding(prevY);
+  } else if (player.state === 'CLIMBING') {
+    player.climbProgress += dt * 4.2;
+    if (player.climbProgress >= 1) {
+      player.x = player.climbTargetX;
+      completeSuccessfulJump(stones[1], false, true);
+    } else {
+      player.x = player.climbStartX + (player.climbTargetX - player.climbStartX) * player.climbProgress;
+      player.y = stones[1].y + Math.sin((1 - player.climbProgress) * Math.PI) * 8;
+    }
+  } else if (player.state === 'FALLING') {
+    player.x += player.vx * dt;
+    player.y += player.vy * dt;
+    player.vy += PHYSICS.gravity * dt;
+    player.rotation += 5 * dt;
+    if (player.y > LR.G.H + 120) handleMiss();
+  }
 
-    // Xử lý sự kiện điều khiển
-    pointerDown(x, y) {
-        this.startCharging();
-    },
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.life -= dt;
+    p.alpha = Math.max(0, p.life * 2.5);
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+  for (let i = floatingTexts.length - 1; i >= 0; i--) {
+    const ft = floatingTexts[i];
+    ft.y -= 38 * dt;
+    ft.life -= dt;
+    if (ft.life <= 0) floatingTexts.splice(i, 1);
+  }
+}
 
-    pointerUp(x, y) {
-        if (this.player.state === 'CHARGING') this.releaseJump();
-    },
+function checkLanding(prevY) {
+  for (let i = 1; i >= 0; i--) {
+    const stone = stones[i];
+    if (!stone) continue;
+    const halfW = stone.w / 2;
+    const leftEdge = stone.x - halfW;
+    const rightEdge = stone.x + halfW;
 
-    keyDown(code) {
-        if (code === 'Space') {
-            if (this.player.state === 'IDLE') {
-                this.startCharging();
-            }
-        }
-    },
-
-    // Lưu ý: Cần thêm xử lý keyup nếu muốn dùng phím Space hoàn chỉnh, hoặc tận dụng engine hiện tại.
-    // Vòng lặp update
-    update(dt) {
-        this.gameState.time += dt;
-        const canvas = LR.G.cv;
-
-        this.clouds.forEach(c => {
-            c.x -= c.speed * dt;
-            if (c.x + c.w < 0) c.x = canvas.width / LR.G.dpr + 60;
-        });
-
-        this.gameState.cameraX += (this.gameState.targetCameraX - this.gameState.cameraX) * Math.min(1, dt * 7.5);
-
-        this.stones.forEach((s, idx) => {
-            if (idx === 0 && (this.player.state === 'IDLE' || this.player.state === 'CHARGING')) {
-                s.y = s.baseY + s.depressY;
-            } else {
-                s.y = s.baseY + Math.sin(this.gameState.time * 2.2 + s.bobPhase) * 3.5;
-            }
-        });
-
-        if (this.player.state === 'IDLE') {
-            this.player.y = this.stones[0].y;
-            this.player.scaleX += (1 - this.player.scaleX) * Math.min(1, dt * 14);
-            this.player.scaleY += (1 - this.player.scaleY) * Math.min(1, dt * 14);
-        } else if (this.player.state === 'CHARGING') {
-            this.player.chargeTime += dt * this.player.chargeDir;
-            if (this.player.chargeTime >= this.PHYSICS.maxChargeTime) {
-                this.player.chargeTime = this.PHYSICS.maxChargeTime;
-                this.player.chargeDir = -1;
-            } else if (this.player.chargeTime <= 0.05 && this.player.chargeDir === -1) {
-                this.player.chargeTime = 0.05;
-                this.player.chargeDir = 1;
-            }
-            const ratio = this.getChargeRatio();
-            this.player.scaleY = 1 - ratio * 0.36;
-            this.player.scaleX = 1 + ratio * 0.28;
-            this.stones[0].depressY = ratio * 9;
-            this.player.y = this.stones[0].y;
-        } else if (this.player.state === 'JUMPING') {
-            const prevY = this.player.y;
-            this.player.x += this.player.vx * dt;
-            this.player.y += this.player.vy * dt;
-            this.player.vy += this.PHYSICS.gravity * dt;
-            this.player.scaleX += (1 - this.player.scaleX) * Math.min(1, dt * 8);
-            this.player.scaleY += (1 - this.player.scaleY) * Math.min(1, dt * 8);
-            if (this.player.vy > 0) this.checkLanding(prevY);
-        } else if (this.player.state === 'CLIMBING') {
-            this.player.climbProgress += dt * 4.2;
-            if (this.player.climbProgress >= 1) {
-                this.player.x = this.player.climbTargetX;
-                this.completeSuccessfulJump(this.stones[1], false, true);
-            } else {
-                this.player.x = this.player.climbStartX + (this.player.climbTargetX - this.player.climbStartX) * this.player.climbProgress;
-                this.player.y = this.stones[1].y + Math.sin((1 - this.player.climbProgress) * Math.PI) * 8;
-            }
-        } else if (this.player.state === 'FALLING') {
-            this.player.x += this.player.vx * dt;
-            this.player.y += this.player.vy * dt;
-            this.player.vy += this.PHYSICS.gravity * dt;
-            this.player.rotation += 5 * dt;
-            if (this.player.y > (canvas.height / LR.G.dpr) + 120) {
-                LR.G.finish({ win: false, title: "Rơi xuống vực!", msg: "Bạn nhảy hụt khỏi khối đá.", score: this.gameState.score });
-            }
-        }
-
-        // Cập nhật HUD của game chính
-        LR.G.hud.set([
-            { l: 'Điểm', v: this.gameState.score },
-            { l: 'Combo', v: 'x' + this.gameState.combo }
-        ]);
-    },
-
-    checkLanding(prevY) {
-        for (let i = 1; i >= 0; i--) {
-            const stone = this.stones[i];
-            if (!stone) continue;
-            const halfW = stone.w / 2;
-            const leftEdge = stone.x - halfW;
-            const rightEdge = stone.x + halfW;
-
-            if (prevY <= stone.y + 8 && this.player.y >= stone.y - 4) {
-                if (this.player.x >= leftEdge && this.player.x <= rightEdge) {
-                    this.player.y = stone.y;
-                    this.player.vx = 0; this.player.vy = 0;
-                    if (i === 0) {
-                        this.player.state = 'IDLE';
-                        this.spawnFloatingText(this.player.x, this.player.y - 45, "CHƯA QUA ĐÁ!", "#94a3b8");
-                    } else {
-                        const distFromCenter = Math.abs(this.player.x - stone.x);
-                        const isSweet = distFromCenter <= this.PHYSICS.sweetSpotRadius;
-                        this.completeSuccessfulJump(stone, isSweet, false);
-                    }
-                    return;
-                }
-
-                if (i === 1 && this.gameState.edgeSnapEnabled) {
-                    const snapTol = this.PHYSICS.edgeSnapTolerance;
-                    const nearLeft = this.player.x >= leftEdge - snapTol && this.player.x < leftEdge;
-                    const nearRight = this.player.x > rightEdge && this.player.x <= rightEdge + snapTol;
-
-                    if (nearLeft || nearRight) {
-                        this.player.state = 'CLIMBING';
-                        this.player.vx = 0; this.player.vy = 0;
-                        this.player.climbProgress = 0;
-                        this.player.climbStartX = this.player.x;
-                        this.player.climbTargetX = nearLeft ? (leftEdge + 10) : (rightEdge - 10);
-                        this.spawnFloatingText(this.player.x, this.player.y - 50, "BẤU MÉP! 😅", "#38bdf8");
-                        return;
-                    }
-                }
-            }
-        }
-
-        const targetStone = this.stones[1];
-        if (targetStone && this.player.y > targetStone.y + 38) {
-            this.player.state = 'FALLING';
-            LR.Sound.sfx.hurtBig();
-        }
-    },
-
-    completeSuccessfulJump(targetStone, isSweetSpot) {
-        this.player.y = targetStone.y;
-        this.player.state = 'IDLE';
-
-        if (isSweetSpot) {
-            const pointsEarned = 2 * this.gameState.combo;
-            this.gameState.score += pointsEarned;
-            this.spawnFloatingText(this.player.x, this.player.y - 55, `HOÀN HẢO! +${pointsEarned}`, "#fbbf24");
-            this.gameState.combo++;
-            targetStone.crystalCollected = true;
-            LR.Sound.sfx.win();
+    if (prevY <= stone.y + 8 && player.y >= stone.y - 4) {
+      if (player.x >= leftEdge && player.x <= rightEdge) {
+        player.y = stone.y;
+        player.vx = 0; player.vy = 0;
+        player.scaleX = 1.28; player.scaleY = 0.74;
+        if (i === 0) {
+          player.state = 'IDLE';
+          spawnFloatingText(player.x, player.y - 45, "CHƯA QUA ĐÁ!", "#94a3b8");
+          Sound.sfx.thud();
         } else {
-            this.gameState.score += 1;
-            this.gameState.combo = 1;
-            this.spawnFloatingText(this.player.x, this.player.y - 45, "+1", "#e2e8f0");
-            LR.Sound.sfx.catchOk();
+          const distFromCenter = Math.abs(player.x - stone.x);
+          const isSweet = distFromCenter <= PHYSICS.sweetSpotRadius;
+          completeSuccessfulJump(stone, isSweet, false);
         }
-
-        this.stones.shift();
-        this.spawnNextStone();
-        this.gameState.targetCameraX = this.stones[0].x - 115;
-
-        // Điều kiện chiến thắng (Ví dụ đạt 10 điểm thì thắng)
-        if (this.gameState.score >= 10) {
-            LR.G.finish({
-                win: true,
-                stars: 3,
-                title: "Vượt Ải Thành Công!",
-                msg: "Bạn đã căn lực nhảy đá cực kỳ chuẩn xác để làm hài lòng nhà vợ.",
-                score: this.gameState.score,
-                rows: [["Điểm số", this.gameState.score]]
-            });
+        return;
+      }
+      // Bấu mép
+      if (i === 1) {
+        const snapTol = PHYSICS.edgeSnapTolerance;
+        const nearLeft = player.x >= leftEdge - snapTol && player.x < leftEdge;
+        const nearRight = player.x > rightEdge && player.x <= rightEdge + snapTol;
+        if (nearLeft || nearRight) {
+          player.state = 'CLIMBING';
+          player.vx = 0; player.vy = 0;
+          player.climbProgress = 0;
+          player.climbStartX = player.x;
+          player.climbTargetX = nearLeft ? (leftEdge + 10) : (rightEdge - 10);
+          spawnFloatingText(player.x, player.y - 50, "BẤU MÉP! 😅", "#38bdf8");
+          Sound.sfx.tick();
+          return;
         }
-    },
+      }
+    }
+  }
+  const target = stones[1];
+  if (target && player.y > target.y + 38) {
+    player.state = 'FALLING';
+    Sound.sfx.bad();
+  }
+}
 
-    spawnParticles(x, y, color, count, speed) {
-        for (let i = 0; i < count; i++) {
-            const angle = Math.random() * Math.PI * 2;
-            const spd = 25 + Math.random() * speed;
-            this.particles.push({
-                x, y: y - 4,
-                vx: Math.cos(angle) * spd,
-                vy: Math.sin(angle) * spd - 40,
-                radius: 2 + Math.random() * 3,
-                color, alpha: 1,
-                life: 0.4 + Math.random() * 0.25
-            });
-        }
-    },
+function completeSuccessfulJump(targetStone, isSweet, wasEdgeSnap) {
+  player.y = targetStone.y;
+  player.state = 'IDLE';
 
-    spawnFloatingText(x, y, text, color) {
-        this.floatingTexts.push({ x, y, text, color, life: 1.1 });
-    },
+  if (isSweet) {
+    const pts = 2 * gs.combo;
+    gs.score += pts;
+    spawnFloatingText(player.x, player.y - 55, `HOÀN HẢO! +${pts} (x${gs.combo})`, "#fbbf24");
+    spawnParticles(player.x, player.y, '#fbbf24', 24, 170);
+    gs.combo++;
+    if (gs.combo > gs.maxCombo) gs.maxCombo = gs.combo;
+    targetStone.crystalCollected = true;
+    Sound.sfx.combo(gs.combo);
+  } else {
+    gs.score += 1;
+    gs.combo = 1;
+    if (!wasEdgeSnap) {
+      spawnFloatingText(player.x, player.y - 45, "+1", "#e2e8f0");
+      spawnParticles(player.x, player.y, '#94a3b8', 10, 90);
+      Sound.sfx.thud();
+    }
+  }
+  updateHUD();
 
-    // Vẽ giao diện game lên canvas
-    draw() {
-        const ctx = LR.G.ctx;
-        const canvas = LR.G.cv;
-        const w = canvas.width / LR.G.dpr;
-        const h = canvas.height / LR.G.dpr;
+  if (gs.score >= TARGET_SCORE) {
+    const stars = gs.score >= TARGET_SCORE + 10 ? 3 : (gs.score >= TARGET_SCORE + 5 ? 2 : 1);
+    LR.G.finish({
+      win: true,
+      score: gs.score,
+      stars,
+      title: 'SANG SÔNG THÀNH CÔNG!',
+      msg: 'Chàng rể đã vượt qua dòng sông đá an toàn.',
+      rows: [
+        ['Điểm', gs.score],
+        ['Combo cao nhất', 'x' + gs.maxCombo]
+      ]
+    });
+    return;
+  }
 
-        ctx.clearRect(0, 0, w, h);
+  stones.shift();
+  spawnNextStone();
+  gs.targetCameraX = stones[0].x - 115;
+}
 
-        // Vẽ nền trời
-        const skyGrad = ctx.createLinearGradient(0, 0, 0, h);
-        skyGrad.addColorStop(0, '#090d16');
-        skyGrad.addColorStop(0.6, '#1e293b');
-        skyGrad.addColorStop(1, '#0f172a');
-        ctx.fillStyle = skyGrad;
-        ctx.fillRect(0, 0, w, h);
+function handleMiss() {
+  LR.G.finish({
+    win: false,
+    score: gs.score,
+    title: 'RƠI XUỐNG VỰC!',
+    msg: 'Bạn đã trượt chân. Thử lại nhé!',
+    rows: [['Điểm', gs.score]]
+  });
+}
 
-        // Vẽ mây
-        this.clouds.forEach(c => {
-            ctx.fillStyle = `rgba(148, 163, 184, ${c.alpha})`;
-            ctx.beginPath();
-            ctx.roundRect(c.x, c.y, c.w, 22, 11);
-            ctx.fill();
-        });
+/* ---- draw ---- */
+function drawFloatingStone(ctx, stone, isTarget) {
+  const x = stone.x - stone.w / 2;
+  const y = stone.y, w = stone.w, h = stone.h;
+  ctx.save();
 
-        ctx.save();
-        ctx.translate(-this.gameState.cameraX, 0);
+  const bodyGrad = ctx.createLinearGradient(x, y, x, y + h);
+  bodyGrad.addColorStop(0, '#475569');
+  bodyGrad.addColorStop(0.5, '#334155');
+  bodyGrad.addColorStop(1, '#0f172a');
+  ctx.fillStyle = bodyGrad;
+  ctx.beginPath();
+  ctx.moveTo(x + 4, y + 6);
+  ctx.lineTo(x + w - 4, y + 6);
+  ctx.lineTo(x + w - 10, y + h - 8);
+  ctx.lineTo(x + w * 0.65, y + h + 6);
+  ctx.lineTo(x + w * 0.32, y + h + 2);
+  ctx.lineTo(x + 12, y + h - 10);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#64748b';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
 
-        // Vẽ đá
-        this.stones.forEach((stone, index) => {
-            const sx = stone.x - stone.w / 2;
-            const sy = stone.y;
-            ctx.fillStyle = '#334155';
-            ctx.fillRect(sx, sy, stone.w, stone.h);
-            ctx.fillStyle = '#38bdf8';
-            ctx.fillRect(sx, sy, stone.w, 8);
-        });
+  const topGrad = ctx.createLinearGradient(x, y, x + w, y);
+  topGrad.addColorStop(0, '#38bdf8');
+  topGrad.addColorStop(0.5, '#818cf8');
+  topGrad.addColorStop(1, '#38bdf8');
+  ctx.fillStyle = '#cbd5e1';
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, 10, 5);
+  ctx.fill();
+  ctx.fillStyle = topGrad;
+  ctx.beginPath();
+  ctx.roundRect(x + 2, y + 1, w - 4, 5, 3);
+  ctx.fill();
 
-        // Vẽ nhân vật
-        ctx.fillStyle = '#38bdf8';
-        ctx.beginPath();
-        ctx.roundRect(this.player.x - 23, this.player.y - 52, 46, 52, 12);
-        ctx.fill();
+  if (isTarget) {
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.22)';
+    ctx.fillRect(x - PHYSICS.edgeSnapTolerance, y, PHYSICS.edgeSnapTolerance, 5);
+    ctx.fillRect(x + w, y, PHYSICS.edgeSnapTolerance, 5);
+  }
+  if (isTarget && !stone.crystalCollected) {
+    const cx = stone.x;
+    ctx.fillStyle = 'rgba(251, 191, 36, 0.35)';
+    ctx.beginPath();
+    ctx.roundRect(cx - PHYSICS.sweetSpotRadius, y, PHYSICS.sweetSpotRadius * 2, 6, 3);
+    ctx.fill();
+    const hoverY = y - 10 + Math.sin(gs.time * 5) * 2.5;
+    ctx.fillStyle = '#fbbf24';
+    ctx.beginPath();
+    ctx.moveTo(cx, hoverY - 7);
+    ctx.lineTo(cx + 6, hoverY);
+    ctx.lineTo(cx, hoverY + 7);
+    ctx.lineTo(cx - 6, hoverY);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#fef08a';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
 
-        // Vẽ hiệu ứng chữ bay
-        this.floatingTexts.forEach(ft => {
-            ctx.save();
-            ctx.font = '800 14px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillStyle = ft.color;
-            ctx.fillText(ft.text, ft.x, ft.y);
-            ctx.restore();
-        });
+function drawCharacter(ctx) {
+  ctx.save();
+  let shakeX = 0, shakeY = 0;
+  const ratio = player.state === 'CHARGING' ? getChargeRatio() : 0;
+  if (ratio > 0.7) {
+    const intensity = (ratio - 0.7) * 8;
+    shakeX = (Math.random() - 0.5) * intensity;
+    shakeY = (Math.random() - 0.5) * intensity;
+  }
+  ctx.translate(player.x + shakeX, player.y + shakeY);
+  ctx.rotate(player.rotation);
+  ctx.scale(player.scaleX, player.scaleY);
+  const w = CHARACTER_CONFIG.width, h = CHARACTER_CONFIG.height;
 
-        ctx.restore();
-    },
+  if (player.state === 'CHARGING') {
+    const glowColor = ratio > 0.75 ? 'rgba(244, 63, 94, 0.45)' : (ratio > 0.4 ? 'rgba(251, 191, 36, 0.4)' : 'rgba(56, 189, 248, 0.35)');
+    ctx.fillStyle = glowColor;
+    ctx.beginPath();
+    ctx.arc(0, -h * 0.4, w * (0.55 + ratio * 0.25), 0, Math.PI * 2);
+    ctx.fill();
+  }
 
-    resize() {}
+  let bodyColor = '#38bdf8', darkColor = '#0284c7';
+  if (ratio > 0.75) { bodyColor = '#fb7185'; darkColor = '#e11d48'; }
+  else if (ratio > 0.4) { bodyColor = '#fbbf24'; darkColor = '#d97706'; }
+
+  const grad = ctx.createLinearGradient(0, -h, 0, 0);
+  grad.addColorStop(0, bodyColor);
+  grad.addColorStop(1, darkColor);
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.roundRect(-w * 0.42, -h * 0.86, w * 0.84, h * 0.86, [18, 18, 10, 10]);
+  ctx.fill();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.fillStyle = '#ef4444';
+  ctx.fillRect(-w * 0.43, -h * 0.66, w * 0.86, 6);
+  ctx.beginPath();
+  ctx.moveTo(-w * 0.42, -h * 0.63);
+  ctx.lineTo(-w * 0.68, -h * 0.72 + Math.sin(gs.time * 12) * 4);
+  ctx.lineTo(-w * 0.62, -h * 0.52 + Math.sin(gs.time * 12) * 4);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = '#0f172a';
+  if (player.state === 'CHARGING' && ratio > 0.45) {
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(0, -h * 0.48); ctx.lineTo(5, -h * 0.43); ctx.lineTo(0, -h * 0.38);
+    ctx.moveTo(15, -h * 0.48); ctx.lineTo(10, -h * 0.43); ctx.lineTo(15, -h * 0.38);
+    ctx.stroke();
+  } else {
+    ctx.beginPath();
+    ctx.arc(3, -h * 0.43, 3.5, 0, Math.PI * 2);
+    ctx.arc(13, -h * 0.43, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(4, -h * 0.45, 1.3, 0, Math.PI * 2);
+    ctx.arc(14, -h * 0.45, 1.3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawAimingAids(ctx) {
+  if (player.state !== 'CHARGING') return;
+  const ratio = getChargeRatio();
+  const { vx, vy, flightTime } = calculateJumpVelocities(ratio);
+  const maxFraction = 0.36, numDots = 6;
+  for (let i = 1; i <= numDots; i++) {
+    const frac = (i / numDots) * maxFraction;
+    const t = frac * flightTime;
+    const px = player.x + vx * t;
+    const py = player.y + vy * t + 0.5 * PHYSICS.gravity * t * t;
+    const alpha = 1 - (i / (numDots + 1)) * 0.75;
+    const radius = Math.max(2.5, 5.5 - i * 0.45);
+    ctx.fillStyle = `rgba(56, 189, 248, ${alpha})`;
+    ctx.beginPath();
+    ctx.arc(px, py, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawChargeBar(ctx) {
+  if (player.state !== 'CHARGING') return;
+  const ratio = getChargeRatio();
+  const barW = Math.min(260, LR.G.W * 0.6), barH = 10;
+  const x = 16, y = LR.G.H - 42;
+  ctx.save();
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+  ctx.strokeStyle = '#334155';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(x - 6, y - 20, barW + 12, barH + 26, 8);
+  ctx.fill(); ctx.stroke();
+  ctx.font = '600 10px "Be Vietnam Pro", sans-serif';
+  ctx.fillStyle = '#94a3b8';
+  ctx.textAlign = 'left';
+  ctx.fillText('LỰC TÍCH TỤ', x, y - 6);
+  ctx.fillStyle = '#1e293b';
+  ctx.beginPath();
+  ctx.roundRect(x, y, barW, barH, 5);
+  ctx.fill();
+  const grad = ctx.createLinearGradient(x, 0, x + barW, 0);
+  grad.addColorStop(0, '#38bdf8');
+  grad.addColorStop(0.5, '#fbbf24');
+  grad.addColorStop(1, '#f43f5e');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.roundRect(x, y, barW * ratio, barH, 5);
+  ctx.fill();
+  ctx.fillStyle = '#38bdf8';
+  ctx.textAlign = 'right';
+  ctx.fillText(Math.round(ratio * 100) + '%', x + barW, y - 6);
+  ctx.restore();
+}
+
+function draw() {
+  const ctx = LR.G.ctx, W = LR.G.W, H = LR.G.H;
+  if (!ctx) return;
+  ctx.clearRect(0, 0, W, H);
+
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, H);
+  skyGrad.addColorStop(0, '#090d16');
+  skyGrad.addColorStop(0.6, '#1e293b');
+  skyGrad.addColorStop(1, '#0f172a');
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  clouds.forEach(c => {
+    ctx.fillStyle = `rgba(148, 163, 184, ${c.alpha})`;
+    ctx.beginPath();
+    ctx.roundRect(c.x, c.y, c.w, 22, 11);
+    ctx.fill();
+  });
+
+  ctx.save();
+  ctx.translate(-gs.cameraX, 0);
+  stones.forEach((stone, i) => drawFloatingStone(ctx, stone, i === 1));
+  drawAimingAids(ctx);
+  particles.forEach(p => {
+    ctx.globalAlpha = p.alpha;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+  drawCharacter(ctx);
+  floatingTexts.forEach(ft => {
+    ctx.save();
+    ctx.font = '800 14px "Be Vietnam Pro", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.globalAlpha = Math.min(1, ft.life * 2);
+    ctx.fillStyle = '#0f172a';
+    ctx.fillText(ft.text, ft.x + 1, ft.y + 1);
+    ctx.fillStyle = ft.color;
+    ctx.fillText(ft.text, ft.x, ft.y);
+    ctx.restore();
+  });
+  ctx.restore();
+
+  drawChargeBar(ctx);
+}
+
+function spawnParticles(x, y, color, count, speed) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd = 25 + Math.random() * speed;
+    particles.push({
+      x, y: y - 4,
+      vx: Math.cos(angle) * spd,
+      vy: Math.sin(angle) * spd - 40,
+      radius: 2 + Math.random() * 3,
+      color, alpha: 1,
+      life: 0.4 + Math.random() * 0.25
+    });
+  }
+}
+function spawnFloatingText(x, y, text, color) {
+  floatingTexts.push({ x, y, text, color, life: 1.1 });
+}
+
+/* ---- mod ---- */
+const mod = {
+  enter() {
+    reset();
+    initClouds();
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+  },
+  exit() {
+    window.removeEventListener('keydown', onKeyDown);
+    window.removeEventListener('keyup', onKeyUp);
+  },
+  resize() {
+    if (!stones || !player || !gs || !stones[0]) return;
+    const groundY = getBaseGroundY();
+    stones.forEach(s => {
+      s.baseY = groundY + (s.yOffset || 0);
+      s.y = s.baseY;
+    });
+    if (player.state === 'IDLE') {
+      player.x = stones[0].x;
+      player.y = stones[0].y;
+    }
+    gs.cameraX = stones[0].x - 115;
+    gs.targetCameraX = gs.cameraX;
+    clouds.forEach(c => { if (c.x > LR.G.W) c.x = Math.random() * LR.G.W; });
+  },
+  update(dt) { update(dt); },
+  draw() { draw(); },
+  pointerDown() {
+    if (LR.G.state !== 'play') return;
+    startCharging();
+  },
+  pointerUp() { releaseJump(); },
+  legend(el) {
+    el.innerHTML = '<p class="note" style="margin:8px 0 0">💡 Nhảy vào tâm khối đá (chấm vàng) để được điểm hoàn hảo và tăng combo. Nhảy sát mép sẽ được bấu víu an toàn.</p>';
+  }
 };
 
-// Đăng ký module vào hệ thống cấp độ của game
-LR.chapters.forEach(ch => {
-    if (ch.id === 'ch1') { // Thêm vào Chương 1 hoặc chương bạn muốn
-        ch.levels.push({
-            id: 'nhay-da',
-            title: 'Căn Lực Nhảy Đá',
-            desc: 'Chinh phục thử thách nhảy đá vượt vực.',
-            status: 'ready',
-            rules: mod.rules,
-            mod: mod
-        });
-    }
-});
+/* ---- level registration ---- */
+const LEVEL = {
+  id: '14-nhay-da',
+  title: 'Nhảy đá qua sông',
+  desc: 'Chàng rể phải nhảy qua các khối đá trôi nổi để qua sông. Giữ để tích lực, nhả để nhảy!',
+  rules: [
+    'Giữ chuột/ngón tay (hoặc Space) để tích lực, nhả ra để nhảy',
+    'Nhảy trúng tâm khối đá (chấm vàng) = điểm hoàn hảo, tăng combo',
+    'Nhảy sát mép có thể bấu víu (an toàn, không mất mạng)',
+    'Rơi xuống vực = thua cuộc',
+    'Đạt ' + TARGET_SCORE + ' điểm để qua ải'
+  ],
+  status: 'ready',
+  pad: false,
+  actLabel: 'NHẢY',
+  mod
+};
 
+if (typeof LR.registerLevel === 'function') {
+  LR.registerLevel('ch1', LEVEL);
+} else {
+  const ch = (LR.chapters || []).find(c => c.id === 'ch1');
+  if (ch) {
+    if (!ch.levels) ch.levels = [];
+    const idx = ch.levels.findIndex(l => l && l.id === LEVEL.id);
+    if (idx >= 0) ch.levels[idx] = LEVEL;
+    else ch.levels.push(LEVEL);
+  }
+}
 })();
