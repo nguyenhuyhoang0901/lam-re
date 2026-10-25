@@ -10,7 +10,7 @@ const COLORS = ['#f4a6a0','#f6c177','#f2e394','#a8d8a0','#8fd3d0','#9cc3f0','#b9
 const INK = '#16202a';
 const BG = '#eef1f4';
 
-// TẤT CẢ 6 mode đều level 5 = bắt buộc dùng giả định thử-sai để giải
+// Mọi mode đều level 5 = BẮT BUỘC dùng giả định thử-sai
 const MODES = {
   'hard-7':  { n: 7, adj: false, level: 5 },
   'hard-8':  { n: 8, adj: false, level: 5 },
@@ -21,13 +21,10 @@ const MODES = {
 };
 const DEFAULT_MODE = 'hard-7';
 
-// Budget/rate đều tăng vì puzzle level-5 hiếm và chậm để verify
 function getBudget(cfg) {
-  // 7s, 8s, 9s — cộng thêm cho adj mode (khó tìm hơn)
   return 7000 + Math.max(0, cfg.n - 7) * 1000 + (cfg.adj ? 2000 : 0);
 }
 function getRateLimit(cfg) {
-  // đủ dài để chạy solver xác nhận requiresTrial
   return 1500 + cfg.n * 80;
 }
 
@@ -47,7 +44,7 @@ function newState(modeId) {
     time: 0, winTimer: 0,
     genToken: 0, genProgress: 0,
     buttons: [],
-    trialHints: 0  // số bước trial trong solution path (thông tin)
+    trialHints: 0
   };
 }
 
@@ -61,6 +58,13 @@ function neighbors(i, n) {
   if (c > 0) o.push(i-1);
   if (c < n-1) o.push(i+1);
   return o;
+}
+
+// ⭐ FIX #1: 1x1 region detection
+function countOneCellRegions(g, n) {
+  const cc = Array(n).fill(0);
+  g.forEach(k => cc[k]++);
+  return cc.filter(x => x === 1).length;
 }
 
 function genSolution(n, adj) {
@@ -79,10 +83,24 @@ function genSolution(n, adj) {
   return ok ? cols : null;
 }
 
+// ⭐ FIX #1: grow() đảm bảo mỗi vùng lớn ≥2 ô ngay từ đầu
 function grow(n, sol) {
   const g = new Array(n*n).fill(-1);
   sol.forEach((c, r) => g[r*n+c] = r);
-  let left = n*n - n;
+
+  // PHASE 1: mỗi vùng phải lớn thêm 1 ô (chặn 1x1 từ đầu)
+  const order = shuffle([...Array(n).keys()]);
+  for (const k of order) {
+    const kingPos = k*n + sol[k];
+    const unfilled = neighbors(kingPos, n).filter(j => g[j] < 0);
+    if (unfilled.length > 0) {
+      const j = unfilled[(Math.random()*unfilled.length)|0];
+      g[j] = k;
+    }
+  }
+
+  // PHASE 2: fill ngẫu nhiên phần còn lại
+  let left = g.filter(x => x < 0).length;
   while (left > 0) {
     const opts = [];
     for (let i = 0; i < n*n; i++) {
@@ -91,7 +109,8 @@ function grow(n, sol) {
     }
     if (!opts.length) break;
     const [i, j] = opts[(Math.random()*opts.length)|0];
-    g[j] = g[i]; left--;
+    g[j] = g[i];
+    left--;
   }
   return g;
 }
@@ -129,10 +148,14 @@ function staysConnected(g, n, cell) {
   return seen.size === cells.length;
 }
 
+// ⭐ FIX #2: mutate() không co vùng xuống 1 ô
 function mutate(g, n, s1, s2) {
+  const cc = Array(n).fill(0);
+  g.forEach(k => cc[k]++);
   const rows = shuffle([...Array(n).keys()].filter(r => s1[r] !== s2[r]));
   for (const r of rows) {
     const cell = r*n + s2[r];
+    if (cc[g[cell]] <= 2) continue;  // ⭐ Không cho vùng 2 ô mất 1 ô
     const ns = shuffle(neighbors(cell, n).filter(j => g[j] !== g[cell]));
     for (const j of ns) {
       if (!staysConnected(g, n, cell)) break;
@@ -147,20 +170,29 @@ function baseUnique(n, adj) {
   const s = genSolution(n, adj);
   if (!s || s.length !== n) return null;
   const g = grow(n, s);
+  if (countOneCellRegions(g, n) > 0) return null;  // ⭐ Reject sớm
   for (let it = 0; it < 500; it++) {
     const sols = solve(g, n, adj, 2);
-    if (sols.length === 1) return { sol: s, reg: g };
+    if (sols.length === 1) {
+      if (countOneCellRegions(g, n) > 0) return null;  // ⭐ Double-check
+      return { sol: s, reg: g };
+    }
     const other = sols.find(x => x.some((c, r) => c !== s[r]));
     if (!other || !mutate(g, n, s, other)) return null;
+    if (countOneCellRegions(g, n) > 0) return null;  // ⭐ Sau mỗi mutation
   }
   return null;
 }
 
+// ⭐ FIX #3: mutateCopy() không co vùng xuống 1 ô
 function mutateCopy(g, n, sol) {
   const kingSet = new Set(sol.map((c, r) => r*n + c));
+  const cc = Array(n).fill(0);
+  g.forEach(k => cc[k]++);
   for (let t = 0; t < 30; t++) {
     const i = (Math.random() * n * n) | 0;
     if (kingSet.has(i)) continue;
+    if (cc[g[i]] <= 2) continue;  // ⭐ Không cho vùng 2 ô mất 1 ô
     const ns = shuffle(neighbors(i, n).filter(j => g[j] !== g[i]));
     if (!ns.length || !staysConnected(g, n, i)) continue;
     const ng = g.slice();
@@ -171,10 +203,11 @@ function mutateCopy(g, n, sol) {
 }
 
 function makePuzzleSimple(n, adj) {
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 50; i++) {
     const b = baseUnique(n, adj);
     if (b) return b;
   }
+  // Cực chẳng đã mới fallback
   const sol = genSolution(n, adj);
   if (sol && sol.length === n) return { sol, reg: grow(n, sol) };
   return null;
@@ -308,12 +341,10 @@ function findAdj(S) {
   return null;
 }
 
-/* ---------- LEVEL 5: TRIAL / GIẢ ĐỊNH ---------- */
 function findTrial(S, timeLimit) {
   const n = S.ctx.n;
   const tStart = performance.now();
   const tl = timeLimit || 250;
-
   const cells = [];
   for (let x = 0; x < n*n; x++) {
     if (!S.cand[x]) continue;
@@ -327,7 +358,6 @@ function findTrial(S, timeLimit) {
   }
   cells.sort((a, b) => b.priority - a.priority);
   const maxTries = Math.min(cells.length, n <= 7 ? 24 : 14);
-
   for (let t = 0; t < maxTries; t++) {
     if (performance.now() - tStart > tl) return null;
     const x = cells[t].x;
@@ -343,7 +373,7 @@ function findTrial(S, timeLimit) {
     }
     if (bad) return {
       level: 5, elim: [x], target: [],
-      msg: `Giả định đặt vua vào ô gạch đỏ (${rcOf(n, x)}): lan truyền suy luận dẫn tới mâu thuẫn (một hàng/cột/mảng hết ô hợp lệ). Vậy ${rcOf(n, x)} không thể có vua.`
+      msg: `Giả định đặt vua vào ô gạch đỏ (${rcOf(n, x)}): lan truyền suy luận dẫn tới mâu thuẫn. Vậy ${rcOf(n, x)} không thể có vua.`
     };
   }
   return null;
@@ -354,8 +384,6 @@ function findStep(S, allowTrial) {
          findGroup(S, 3) || findGroup(S, 4) || (allowTrial ? findTrial(S) : null);
 }
 
-/* ---------- VERIFY: PUZZLE THỰC SỰ CẦN TRIAL ---------- */
-// Chạy solver với CHỈ kỹ thuật 1-4. Nếu kẹt giữa chừng → puzzle cần trial.
 function requiresTrial(n, g, adj, timeLimit) {
   const ctx = makeCtx(n, g, adj);
   const S = newReasonState(ctx);
@@ -371,9 +399,11 @@ function requiresTrial(n, g, adj, timeLimit) {
   return S.placed < n;
 }
 
-/* ---------- RATE ---------- */
+// ⭐ FIX #4: rate() reject cứng nếu có 1x1
 function rate(n, g, adj, level, timeLimit) {
-  // Level-5 LUÔN được thưởng lớn vì đây là mode chính
+  // Defense-in-depth: reject any 1x1 puzzle
+  if (countOneCellRegions(g, n) > 0) return { ok: false };
+
   const W = [0, 1, 4, 14, 40, 400];
   const tStart = performance.now();
   const tl = timeLimit || 800;
@@ -381,7 +411,6 @@ function rate(n, g, adj, level, timeLimit) {
   const S = newReasonState(ctx);
   let max = 0, score = 0;
   const cnt = [0, 0, 0, 0, 0, 0];
-
   for (let it = 0; it < 500 && S.placed < n; it++) {
     if (performance.now() - tStart > tl) return { ok: false };
     const step = findStep(S, true);
@@ -393,14 +422,11 @@ function rate(n, g, adj, level, timeLimit) {
     cnt[step.level]++;
   }
   if (S.placed < n) return { ok: false };
-
   const cc = Array(n).fill(0);
   g.forEach(k => cc[k]++);
+  // Vẫn giữ phạt dù đã reject ở trên (defense-in-depth)
   score -= 40 * cc.filter(x => x === 1).length;
-
-  // TẤT CẢ mode đều yêu cầu trial bắt buộc
   const meets = (max >= 5 && cnt[5] >= 1 && requiresTrial(n, g, adj));
-
   return { ok: true, max, score, cnt, meets,
     trialCount: cnt[5],
     key: score + (meets ? 100000 : 0) };
@@ -432,18 +458,12 @@ function startGeneration(cfg) {
         return;
       }
     }
-    st.n = cfg.n;
-    st.adj = cfg.adj;
-    st.level = cfg.level;
-    st.sol = p.sol;
-    st.reg = p.reg;
+    st.n = cfg.n; st.adj = cfg.adj; st.level = cfg.level;
+    st.sol = p.sol; st.reg = p.reg;
     st.cells = new Array(cfg.n * cfg.n).fill(0);
-    st.hist = [];
-    st.hint = null;
-    st.hints = 0;
+    st.hist = []; st.hint = null; st.hints = 0;
     st.trialHints = p.r ? p.r.trialCount : 0;
-    st.time = 0;
-    st.winTimer = 0;
+    st.time = 0; st.winTimer = 0;
     st.state = 'playing';
     computeLayout();
     Sound.sfx.catchOk();
@@ -452,7 +472,6 @@ function startGeneration(cfg) {
   function step() {
     if (st.genToken !== token) return;
     if (st.state !== 'loading') return;
-
     const end = performance.now() + 26;
     while (performance.now() < end) {
       if (!cur) {
@@ -469,6 +488,7 @@ function startGeneration(cfg) {
       }
       const ng = mutateCopy(cur.reg, cfg.n, cur.sol);
       if (!ng) { stagn++; if (stagn > 100) cur = null; continue; }
+      if (countOneCellRegions(ng, cfg.n) > 0) { stagn++; if (stagn > 100) cur = null; continue; }
       if (solve(ng, cfg.n, cfg.adj, 2).length !== 1) { stagn++; if (stagn > 100) cur = null; continue; }
       const r = rate(cfg.n, ng, cfg.adj, cfg.level, rateLimit);
       if (r.ok) {
@@ -480,24 +500,11 @@ function startGeneration(cfg) {
       } else stagn++;
       if (stagn > 100) cur = null;
     }
-
     const el = performance.now() - tStart;
     st.genProgress = Math.min(1, el / budget);
-
-    // Điều kiện dừng: đã có ván meets hoặc hết budget
-    if (best && best.r.meets && el > budget * 0.6) {
-      finish(best);
-      return;
-    }
-    if (best && el > budget * 1.5) {
-      // Hết budget mở rộng mà vẫn chưa meets → vẫn dùng best (kèm cảnh báo ngầm)
-      finish(best);
-      return;
-    }
-    if (!best && el > budget * 1.2) {
-      finish(null);
-      return;
-    }
+    if (best && best.r.meets && el > budget * 0.6) { finish(best); return; }
+    if (best && el > budget * 1.5) { finish(best); return; }
+    if (!best && el > budget * 1.2) { finish(null); return; }
     setTimeout(step, 0);
   }
   step();
@@ -517,7 +524,6 @@ function computeLayout() {
   const bx = (G.W - boardSize) / 2;
   const by = top + pad + (availH - boardSize) / 2;
   geo = { cs, bx, by, boardSize };
-
   const btnY = G.H - bottomH + 4;
   const btnH = 44;
   const gap = 6;
@@ -535,10 +541,8 @@ function rc(i) { return `hàng ${((i/st.n)|0)+1}, cột ${i%st.n+1}`; }
 function getHintInfo() {
   const N = st.n;
   if (!st.sol.length) return { msg: 'Ván chưa sẵn sàng. Nhấn "Mới" để thử lại.', target: [], elim: [] };
-
   const kings = [];
   st.cells.forEach((v, i) => { if (v === 2) kings.push(i); });
-
   const wrong = kings.filter(i => st.sol[(i/N)|0] !== i%N);
   if (wrong.length) {
     return {
@@ -549,11 +553,8 @@ function getHintInfo() {
   }
   const wrongX = [];
   st.cells.forEach((v, i) => { if (v === 1 && st.sol[(i/N)|0] === i%N) wrongX.push(i); });
-  if (wrongX.length) {
-    return { msg: `Dấu × ở ${rc(wrongX[0])} đang sai: vua thật sự nằm ở đó.`, target: wrongX, elim: [] };
-  }
+  if (wrongX.length) return { msg: `Dấu × ở ${rc(wrongX[0])} đang sai.`, target: wrongX, elim: [] };
   if (kings.length === N) return { msg: 'Bàn đã đủ vua.', target: [], elim: [] };
-
   const ctx = makeCtx(N, st.reg, st.adj);
   const S = newReasonState(ctx);
   kings.forEach(i => placeR(S, i));
@@ -561,11 +562,7 @@ function getHintInfo() {
   const step = findStep(S, true);
   if (step && !step.contra) {
     const lv = ['', 'cơ bản', 'nâng cao', 'nhóm 2 đường', 'nhóm 3-4 đường', 'giả định (thử sai)'][step.level];
-    return {
-      msg: step.msg + ` (Kỹ thuật: ${lv})`,
-      target: step.target || [],
-      elim: step.elim || []
-    };
+    return { msg: step.msg + ` (Kỹ thuật: ${lv})`, target: step.target || [], elim: step.elim || [] };
   }
   let bestR = -1, bestN = 99;
   for (let r = 0; r < N; r++) {
@@ -574,35 +571,21 @@ function getHintInfo() {
     for (let c = 0; c < N; c++) if (S.cand[r*N+c]) n++;
     if (n < bestN) { bestN = n; bestR = r; }
   }
-  if (bestR < 0) return { msg: 'Thế cờ phức tạp. Thử xoá bớt × để gợi ý dễ hơn.', target: [], elim: [] };
+  if (bestR < 0) return { msg: 'Thế cờ phức tạp. Thử xoá × để gợi ý dễ hơn.', target: [], elim: [] };
   const cell = bestR * N + st.sol[bestR];
-  return { msg: `Thế cờ cần suy luận rất sâu. Thử đặt vua tại ${rc(cell)} (ô viền vàng).`, target: [cell], elim: [] };
+  return { msg: `Thế cờ cần suy luận rất sâu. Thử đặt vua tại ${rc(cell)}.`, target: [cell], elim: [] };
 }
 
 /* ================= ACTIONS ================= */
-function doNewGame() {
-  st.genToken++;
-  Sound.sfx.click();
-  startGeneration(st.cfg);
-}
-function doHint() {
-  if (st.state !== 'playing') return;
-  st.hint = getHintInfo();
-  st.hints++;
-  Sound.sfx.win();
-}
+function doNewGame() { st.genToken++; Sound.sfx.click(); startGeneration(st.cfg); }
+function doHint() { if (st.state !== 'playing') return; st.hint = getHintInfo(); st.hints++; Sound.sfx.win(); }
 function doUndo() {
   if (!st.hist.length || st.state !== 'playing') return;
-  st.cells = st.hist.pop();
-  st.hint = null;
-  Sound.sfx.click();
+  st.cells = st.hist.pop(); st.hint = null; Sound.sfx.click();
 }
 function doClear() {
   if (st.state !== 'playing') return;
-  st.hist.push(st.cells.slice());
-  st.cells = new Array(st.n * st.n).fill(0);
-  st.hint = null;
-  Sound.sfx.click();
+  st.hist.push(st.cells.slice()); st.cells = new Array(st.n * st.n).fill(0); st.hint = null; Sound.sfx.click();
 }
 function doCellClick(i) {
   if (st.state !== 'playing') return;
@@ -640,7 +623,6 @@ function finishWin() {
   const score = Math.max(100, 5000 - st.hints * 500 - Math.floor(st.time) * 2);
   const secs = Math.floor(st.time);
   const tStr = String(Math.floor(secs/60)).padStart(2,'0') + ':' + String(secs%60).padStart(2,'0');
-  const modeLabel = st.adj ? 'Siêu Khó' : 'Rất Khó';
   LR.G.finish({
     win: true, score, stars,
     title: 'GIẢI XONG!',
@@ -648,7 +630,7 @@ function finishWin() {
     rows: [
       ['Thời gian', tStr],
       ['Gợi ý dùng', st.hints],
-      ['Chế độ', modeLabel + ' · ' + st.n + '×' + st.n],
+      ['Chế độ', (st.adj ? 'Siêu Khó' : 'Rất Khó') + ' · ' + st.n + '×' + st.n],
       ['Bước giả định', st.trialHints + ' lần'],
       ['Điểm', score]
     ]
@@ -660,10 +642,7 @@ function update(dt) {
   if (!st || LR.G.state !== 'play') return;
   if (st.state === 'loading') return;
   if (st.state === 'playing') st.time += dt;
-  if (st.state === 'won') {
-    st.winTimer -= dt;
-    if (st.winTimer <= 0) finishWin();
-  }
+  if (st.state === 'won') { st.winTimer -= dt; if (st.winTimer <= 0) finishWin(); }
   const kings = st.cells.filter(v => v === 2).length;
   const secs = Math.floor(st.time);
   const tStr = String(Math.floor(secs/60)).padStart(2,'0') + ':' + String(secs%60).padStart(2,'0');
@@ -684,7 +663,6 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.lineTo(x, y+r); ctx.arcTo(x, y, x+r, y, r);
   ctx.closePath();
 }
-
 function drawKing(ctx, cx, cy, size) {
   const s = size / 24;
   ctx.save();
@@ -695,11 +673,9 @@ function drawKing(ctx, cx, cy, size) {
   ctx.beginPath();
   ctx.moveTo(3, 7); ctx.lineTo(8, 12); ctx.lineTo(12, 5); ctx.lineTo(16, 12);
   ctx.lineTo(21, 7); ctx.lineTo(19, 17); ctx.lineTo(5, 17);
-  ctx.closePath();
-  ctx.fill();
+  ctx.closePath(); ctx.fill();
   ctx.restore();
 }
-
 function drawX(ctx, cx, cy, size) {
   const half = size * 0.17;
   ctx.strokeStyle = 'rgba(27, 27, 27, 0.55)';
@@ -749,9 +725,7 @@ function drawBoard(ctx) {
       ctx.strokeStyle = 'rgba(210, 59, 59, 0.55)';
       ctx.lineWidth = 3;
       for (let d = -cs; d < cs*2; d += 10) {
-        ctx.beginPath();
-        ctx.moveTo(x + d, y); ctx.lineTo(x + d + cs, y + cs);
-        ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x + d, y); ctx.lineTo(x + d + cs, y + cs); ctx.stroke();
       }
       ctx.restore();
     }
@@ -784,10 +758,8 @@ function drawBoard(ctx) {
       if (conflicts.has(i)) {
         ctx.fillStyle = '#d23b3b';
         ctx.beginPath(); ctx.arc(cx, cy, cs * 0.34, 0, Math.PI*2); ctx.fill();
-        drawKing(ctx, cx, cy, cs * 0.6);
-      } else {
-        drawKing(ctx, cx, cy, cs * 0.6);
       }
+      drawKing(ctx, cx, cy, cs * 0.6);
     } else if (v === 1) {
       drawX(ctx, cx, cy, cs);
     }
@@ -817,26 +789,19 @@ function drawLoading(ctx) {
   ctx.font = '700 18px "Be Vietnam Pro", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-
   const modeLabel = st.cfg.adj ? 'Siêu Khó' : 'Rất Khó';
   ctx.fillText('Đang tạo ván ' + modeLabel + ' ' + st.cfg.n + '×' + st.cfg.n + '…', G.W/2, G.H/2 - 40);
-
   ctx.font = '600 12px "Be Vietnam Pro", sans-serif';
   ctx.fillStyle = 'rgba(22,32,42,0.7)';
   ctx.fillText('Đang dò ván BẮT BUỘC dùng giả định thử-sai…', G.W/2, G.H/2 - 14);
 
-  const barW = Math.min(240, G.W - 60);
-  const barH = 10;
-  const bx = (G.W - barW) / 2;
-  const by = G.H/2 + 14;
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 2;
-  roundRect(ctx, bx, by, barW, barH, 5);
-  ctx.stroke();
+  const barW = Math.min(240, G.W - 60), barH = 10;
+  const bx = (G.W - barW) / 2, by = G.H/2 + 14;
+  ctx.strokeStyle = INK; ctx.lineWidth = 2;
+  roundRect(ctx, bx, by, barW, barH, 5); ctx.stroke();
   const pct = Math.max(0.05, st.genProgress || 0);
   ctx.fillStyle = '#b8860b';
-  roundRect(ctx, bx + 1, by + 1, (barW - 2) * pct, barH - 2, 4);
-  ctx.fill();
+  roundRect(ctx, bx + 1, by + 1, (barW - 2) * pct, barH - 2, 4); ctx.fill();
 
   ctx.fillStyle = 'rgba(184, 134, 11, 0.85)';
   ctx.font = '600 11px "Be Vietnam Pro", sans-serif';
@@ -882,23 +847,18 @@ function draw() {
   const dpr = G.dpr || 1;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, G.W, G.H);
-
   if (st.state === 'loading') { drawLoading(ctx); return; }
   if (!geo) return;
-
   ctx.fillStyle = BG;
   ctx.fillRect(0, 0, G.W, G.H);
-
   drawBoard(ctx);
   drawButtons(ctx);
-
   if (st.hint) {
     const msgY = geo.by + geo.boardSize + 8;
     ctx.fillStyle = 'rgba(22,32,42,0.85)';
     ctx.font = '600 11px "Be Vietnam Pro", sans-serif';
     wrapText(ctx, st.hint.msg, G.W/2, msgY, G.W - 24, 14, '#ffffff');
   }
-
   if (st.state === 'won') drawWonOverlay(ctx);
 }
 
@@ -907,7 +867,6 @@ function onPointerDown(x, y, e) {
   if (!st) return;
   Sound.init();
   if (st.state === 'loading' || st.state === 'won') return;
-
   for (const btn of st.buttons) {
     if (x >= btn.x && x <= btn.x + btn.w && y >= btn.y && y <= btn.y + btn.h) {
       if (btn.id === 'hint')  doHint();
@@ -917,15 +876,12 @@ function onPointerDown(x, y, e) {
       return;
     }
   }
-
   if (!geo) return;
   if (x >= geo.bx && x <= geo.bx + geo.boardSize &&
       y >= geo.by && y <= geo.by + geo.boardSize) {
     const c = Math.floor((x - geo.bx) / geo.cs);
     const r = Math.floor((y - geo.by) / geo.cs);
-    if (r >= 0 && r < st.n && c >= 0 && c < st.n) {
-      doCellClick(r * st.n + c);
-    }
+    if (r >= 0 && r < st.n && c >= 0 && c < st.n) doCellClick(r * st.n + c);
   }
 }
 
@@ -952,8 +908,8 @@ const mod = {
   legend(el) {
     el.innerHTML = '<p class="note" style="margin:8px 0 0">' +
       '♔ Mỗi mảng màu 1 vua. Mỗi hàng/cột 1 vua. Chạm ô: ✕ → ♔ → trống. ' +
-      '<b>TẤT CẢ chế độ</b> đều bắt buộc phải dùng <b>suy luận giả định (thử-sai)</b> để giải — ' +
-      'suy luận trực tiếp sẽ bế tắc. Ván có lời giải duy nhất.</p>';
+      '<b>TẤT CẢ chế độ</b> đều bắt buộc phải dùng <b>suy luận giả định (thử-sai)</b>. ' +
+      'Không có vùng 1×1 — mỗi vùng tối thiểu 2 ô.</p>';
   }
 };
 
@@ -961,15 +917,15 @@ const mod = {
 const LEVEL = {
   id: '20-xep-vua',
   title: 'Xếp Vua',
-  desc: 'Mỗi mảng màu một vua. Mỗi hàng, mỗi cột đúng một vua. Mọi chế độ đều bắt buộc phải dùng suy luận giả định thử-sai để giải!',
+  desc: 'Mỗi mảng màu một vua. Mỗi hàng, mỗi cột đúng một vua. Mọi chế độ đều bắt buộc dùng giả định thử-sai và không có vùng 1×1!',
   rules: [
     'Mỗi mảng màu đặt <b>1 vua</b> ♔',
     'Mỗi hàng và mỗi cột có <b>đúng 1 vua</b>',
     'Hai vua không được cùng hàng, cột hoặc mảng màu',
     '<b>Siêu Khó:</b> hai vua còn không được kề nhau (kể cả chéo)',
-    '<b>Mọi chế độ:</b> bắt buộc phải dùng <b>giả định thử-sai</b> mới giải được',
-    'Chạm ô để đổi trạng thái: ✕ → ♔ → trống',
-    'Mỗi ván có lời giải duy nhất — dùng gợi ý khi bí'
+    '<b>Mọi chế độ:</b> bắt buộc phải dùng <b>giả định thử-sai</b>',
+    '<b>Mọi chế độ:</b> mỗi vùng tối thiểu <b>2 ô</b>',
+    'Chạm ô để đổi trạng thái: ✕ → ♔ → trống'
   ],
   status: 'ready',
   pad: false,
