@@ -7,10 +7,10 @@ const {clamp} = LR.util;
 
 /* ================= CONFIG ================= */
 const LEVELS = [
-  { w: 5, h: 5, dogs: 6,  memo: 4   },   // vuông
-  { w: 7, h: 5, dogs: 10, memo: 5.5 },   // rộng
-  { w: 6, h: 8, dogs: 14, memo: 7   },   // cao
-  { w: 8, h: 6, dogs: 18, memo: 9   }    // rộng
+  { w: 5, h: 5, dogs: 6,  memo: 4   },
+  { w: 7, h: 5, dogs: 10, memo: 5.5 },
+  { w: 6, h: 8, dogs: 14, memo: 7   },
+  { w: 8, h: 6, dogs: 18, memo: 9   }
 ];
 const LIVES = 3;
 const MOVE_T = 0.1;
@@ -49,6 +49,8 @@ function sndBell(m, delay, v) {
 }
 function sndWin()     { [72,76,79,84].forEach((m,i) => sndBell(m, 0.45 + i*0.09)); }
 function sndVictory() { [72,72,76,79,84,79,84,88].forEach((m,i) => sndBell(m, 0.1 + i*0.13, 1.1)); Sound.noise(1.2, 0.1, 'highpass', 4000, 4000, 0.5, 1); }
+function sndCommit()  { Sound.tone('sine', 660, 880, 0.09, 0.12); Sound.tone('triangle', 440, 660, 0.12, 0.06, 0.02); }
+function sndInvalid() { Sound.tone('triangle', 200, 140, 0.15, 0.15); }
 
 /* ================= STATE ================= */
 let st = null;
@@ -58,7 +60,12 @@ function createInitialState() {
   return {
     nW: 5, nH: 5,
     dogs: [], rank: [], start: 0, banana: 0,
-    cx: 0, cy: 0, mv: null, targetCell: null, path: null, nudge: null, face: 1,
+    cx: 0, cy: 0,
+    mv: null,
+    targetCell: null,     // ô đang trỏ tới trong lúc kéo
+    previewPath: null,    // đường đi dự phòng vẽ trong lúc kéo (chưa thực thi)
+    path: null,           // hàng đợi bước đi thực tế (sau khi nhả tay)
+    nudge: null, face: 1,
     dragging: false,
     lives: LIVES, steps: 0, levelTime: 0,
     totalSteps: 0, totalTime: 0, totalLives: 0,
@@ -116,7 +123,6 @@ function genLevel(L) {
       }
     }
   }
-  // fallback
   const dogs = new Array(N).fill(false);
   const rank = new Array(N).fill(0);
   return { dogs, rank, start: 0, banana: N-1 };
@@ -137,6 +143,7 @@ function startLevel(li) {
   st.cy = (gen.start / L.w) | 0;
   st.mv = null;
   st.targetCell = null;
+  st.previewPath = null;
   st.path = null;
   st.nudge = null;
   st.dragging = false;
@@ -178,7 +185,7 @@ function beginPlay() {
   st.phase = 'play';
   st.popT = 0;
   sndPop(1.1); sndPop(1.5, 0.1);
-  setMsg('🍌 Kéo chuột để đi tới nải chuối — tránh ô có chó!');
+  setMsg('🍌 Kéo chuột vẽ đường đi — nhả tay để bắt đầu di chuyển!');
 }
 
 function doStep(nx, ny) {
@@ -205,8 +212,10 @@ function hit(i) {
   st.hurtT = 0;
   st.shake = 0.4;
   st.targetCell = null;
+  st.previewPath = null;
   st.path = null;
   st.mv = null;
+  st.dragging = false;
   sndHurt();
   setMsg('🐶 Gâu gâu! Bạn giẫm phải chó — mất 1 mạng!');
   const c = cellCenter(i);
@@ -219,6 +228,7 @@ function afterHurt() {
     st.cx = st.start % st.nW;
     st.cy = (st.start / st.nW) | 0;
     st.mv = null;
+    st.path = null;
     st.hit = -1;
     st.phase = 'play';
     sndPop(0.9);
@@ -234,6 +244,9 @@ function afterHurt() {
 function winLevel() {
   st.phase = 'win';
   st.winT = 0;
+  st.path = null;
+  st.previewPath = null;
+  st.dragging = false;
   sndMunch();
   setTimeout(() => sndWin(), 300);
   const c = cellCenter(st.banana);
@@ -278,7 +291,7 @@ function onLevelWin() {
   }
 }
 
-/* ================= CHASE PATH (BFS avoiding revealed dogs) ================= */
+/* ================= BFS PATH (tránh ô chó đã lộ) ================= */
 function bfsPath(startIdx, endIdx) {
   const W = st.nW, H = st.nH;
   if (startIdx === endIdx) return [];
@@ -299,7 +312,7 @@ function bfsPath(startIdx, endIdx) {
       if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
       const ni = ny * W + nx;
       if (visited.has(ni)) continue;
-      if (st.revealed[ni]) continue; // tránh ô chó đã lộ
+      if (st.revealed[ni]) continue;
       visited.add(ni);
       prev.set(ni, cur);
       q.push(ni);
@@ -308,25 +321,16 @@ function bfsPath(startIdx, endIdx) {
   return null;
 }
 
-function refreshPath() {
-  if (!st.targetCell) { st.path = null; return; }
+function computePreviewPath() {
+  if (!st.targetCell) { st.previewPath = null; return; }
   const startIdx = st.cy * st.nW + st.cx;
   const endIdx = st.targetCell.cy * st.nW + st.targetCell.cx;
-  st.path = bfsPath(startIdx, endIdx);
+  if (startIdx === endIdx) { st.previewPath = []; return; }
+  st.previewPath = bfsPath(startIdx, endIdx);
 }
 
 function tryNextStep() {
-  if (!st.targetCell) return;
-  if (st.cx === st.targetCell.cx && st.cy === st.targetCell.cy) {
-    st.targetCell = null;
-    st.path = null;
-    return;
-  }
-  if (!st.path || st.path.length === 0) refreshPath();
-  if (!st.path || st.path.length === 0) {
-    st.targetCell = null;
-    return;
-  }
+  if (!st.path || st.path.length === 0) { st.path = null; return; }
   const nextIdx = st.path.shift();
   const nx = nextIdx % st.nW;
   const ny = (nextIdx / st.nW) | 0;
@@ -340,7 +344,7 @@ function computeLayout() {
   const top = G.top || 0;
   const pad = 8;
   const availW = W - pad * 2;
-  const availH = H - top - pad * 2 - 100; // trừ 100px cho message + skip button
+  const availH = H - top - pad * 2 - 100;
   const cs = Math.max(10, Math.min(availW / st.nW, availH / st.nH));
   const boardW = cs * st.nW;
   const boardH = cs * st.nH;
@@ -439,7 +443,10 @@ function update(dt) {
           arrive();
         }
       }
-      if (st.phase === 'play' && !st.mv) tryNextStep();
+      // Chỉ đi theo path đã commit (sau khi nhả tay). Không tính path preview.
+      if (st.phase === 'play' && !st.mv && !st.dragging && st.path) {
+        tryNextStep();
+      }
       break;
     case 'hurt':
       st.hurtT += dt;
@@ -603,7 +610,6 @@ function drawPlayer(ctx, x, y, u, sc, dizzy, joy) {
   if (dizzy) { ctx.moveTo(-4,-8); ctx.quadraticCurveTo(0,-12,4,-8); }
   else       { ctx.moveTo(-5,-9); ctx.quadraticCurveTo(0,-4,5,-9); }
   ctx.stroke();
-  // Nón lá
   ctx.beginPath();
   ctx.moveTo(0,-60); ctx.quadraticCurveTo(-8,-40,-36,-28);
   ctx.quadraticCurveTo(0,-20,36,-28); ctx.quadraticCurveTo(8,-40,0,-60);
@@ -619,6 +625,128 @@ function drawPlayer(ctx, x, y, u, sc, dizzy, joy) {
   ctx.moveTo(-15,-22); ctx.lineTo(-11,-8);
   ctx.moveTo(15,-22);  ctx.lineTo(11,-8);
   ctx.stroke();
+  ctx.restore();
+}
+
+/* ---- HIỆU ỨNG ĐƯỜNG ĐI ---- */
+function drawPathPreview(ctx) {
+  if (!st.dragging || st.phase !== 'play') return;
+  const cs = geo.cs;
+
+  if (!st.previewPath) {
+    // Target bị chặn (BFS thất bại) — vẽ vòng đỏ quanh ô target
+    if (st.targetCell) {
+      const c = cellCenter(st.targetCell.cy * st.nW + st.targetCell.cx);
+      const pulse = 0.5 + 0.5 * Math.sin(st.t * 8);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(200, 40, 30, ' + (0.5 + pulse * 0.4) + ')';
+      ctx.lineWidth = Math.max(2, cs * 0.06);
+      ctx.setLineDash([cs * 0.12, cs * 0.1]);
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, cs * 0.34, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Dấu X
+      ctx.strokeStyle = 'rgba(200, 40, 30, 0.85)';
+      ctx.lineWidth = Math.max(2.5, cs * 0.07);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(c.x - cs * 0.14, c.y - cs * 0.14);
+      ctx.lineTo(c.x + cs * 0.14, c.y + cs * 0.14);
+      ctx.moveTo(c.x + cs * 0.14, c.y - cs * 0.14);
+      ctx.lineTo(c.x - cs * 0.14, c.y + cs * 0.14);
+      ctx.stroke();
+      ctx.restore();
+    }
+    return;
+  }
+
+  if (st.previewPath.length === 0) {
+    // Target = ô hiện tại — chỉ vẽ vòng quanh
+    const c = cellCenter(st.cy * st.nW + st.cx);
+    const pulse = 0.6 + 0.4 * Math.sin(st.t * 6);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 220, 60, ' + (0.5 * pulse) + ')';
+    ctx.lineWidth = Math.max(2, cs * 0.05);
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, cs * 0.3, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+
+  const startC = cellCenter(st.cy * st.nW + st.cx);
+
+  // 1. Đường nét đứt nối liền các ô
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255, 235, 100, 0.55)';
+  ctx.lineWidth = Math.max(3, cs * 0.07);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.setLineDash([cs * 0.14, cs * 0.12]);
+  ctx.lineDashOffset = -st.t * 80;
+  ctx.beginPath();
+  ctx.moveTo(startC.x, startC.y);
+  for (const idx of st.previewPath) {
+    const c = cellCenter(idx);
+    ctx.lineTo(c.x, c.y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+
+  // 2. Dấu chấm "flow" trên mỗi ô
+  for (let i = 0; i < st.previewPath.length; i++) {
+    const c = cellCenter(st.previewPath[i]);
+    const pulse = 0.65 + 0.35 * Math.sin(st.t * 8 - i * 0.6);
+    ctx.save();
+    // quầng sáng
+    const grad = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, cs * 0.22);
+    grad.addColorStop(0, 'rgba(255, 240, 120, ' + (0.55 * pulse) + ')');
+    grad.addColorStop(1, 'rgba(255, 240, 120, 0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, cs * 0.22, 0, Math.PI * 2);
+    ctx.fill();
+    // chấm trung tâm
+    ctx.fillStyle = 'rgba(255, 250, 180, ' + (0.9 * pulse) + ')';
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, cs * 0.08 * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // 3. Vòng target đích
+  const tc = cellCenter(st.previewPath[st.previewPath.length - 1]);
+  ctx.save();
+  const pulse = 0.5 + 0.5 * Math.sin(st.t * 6);
+  ctx.strokeStyle = 'rgba(255, 200, 40, ' + (0.85 + pulse * 0.15) + ')';
+  ctx.lineWidth = Math.max(2.5, cs * 0.06);
+  ctx.beginPath();
+  ctx.arc(tc.x, tc.y, cs * 0.32 + pulse * cs * 0.04, 0, Math.PI * 2);
+  ctx.stroke();
+  // vòng trong mờ
+  ctx.strokeStyle = 'rgba(255, 240, 150, 0.45)';
+  ctx.lineWidth = Math.max(1.5, cs * 0.03);
+  ctx.beginPath();
+  ctx.arc(tc.x, tc.y, cs * 0.18, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawWalkPath(ctx) {
+  // Đường còn lại khi đang bước (mờ dần)
+  if (!st.path || st.path.length === 0 || st.dragging) return;
+  const cs = geo.cs;
+  ctx.save();
+  for (let i = 0; i < st.path.length; i++) {
+    const c = cellCenter(st.path[i]);
+    const alpha = 0.45 * (1 - i / Math.max(1, st.path.length));
+    ctx.fillStyle = 'rgba(255, 235, 100, ' + alpha + ')';
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, cs * 0.07, 0, Math.PI * 2);
+    ctx.fill();
+  }
   ctx.restore();
 }
 
@@ -686,7 +814,6 @@ function render() {
   const dpr = G.dpr || 1;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  // Background
   ctx.fillStyle = '#f2d5c8';
   ctx.fillRect(0, 0, G.W, G.H);
   const bgGrad = ctx.createRadialGradient(G.W/2, G.H*0.4, 0, G.W/2, G.H*0.4, Math.max(G.W, G.H) * 0.8);
@@ -696,7 +823,6 @@ function render() {
   ctx.fillStyle = bgGrad;
   ctx.fillRect(0, 0, G.W, G.H);
 
-  // Shake
   let shX = 0, shY = 0;
   if (st.shake > 0) {
     shX = (Math.random()*2-1) * st.shake * 14;
@@ -722,7 +848,6 @@ function render() {
     ctx.fillStyle = ((cx + cy) % 2) ? '#8cc45a' : '#9fd36b';
     ctx.fillRect(x, y, cs, cs);
 
-    // Grass tufts
     ctx.strokeStyle = '#5f9a3c';
     ctx.lineWidth = 1.4;
     ctx.lineCap = 'round';
@@ -761,6 +886,10 @@ function render() {
   for (let k = 0; k <= nH; k++) {
     ctx.beginPath(); ctx.moveTo(bx, by + k*cs); ctx.lineTo(bx + nW*cs, by + k*cs); ctx.stroke();
   }
+
+  // === ĐƯỜNG ĐI (dưới dogs để không che) ===
+  drawWalkPath(ctx);
+  drawPathPreview(ctx);
 
   // Dogs
   const u = cs / 100;
@@ -806,7 +935,6 @@ function render() {
     ctx.restore();
   }
 
-  // Red flash on hit
   if (st.phase === 'hurt') {
     ctx.fillStyle = 'rgba(200,40,30,' + (0.28 * (1 - st.hurtT)) + ')';
     roundRect(ctx, bx - 3, by - 3, geo.boardW + 6, geo.boardH + 6, 12);
@@ -815,7 +943,6 @@ function render() {
 
   ctx.restore();
 
-  // Message + skip button (không bị shake)
   drawMessageArea(ctx);
 }
 
@@ -835,28 +962,50 @@ function onPointerDown(x, y, e) {
   }
 
   if (st.phase !== 'play') return;
-  const cell = screenToCell(x, y);
-  if (!cell) return;
+
+  // Bắt đầu kéo mới → huỷ path đang đi dở
+  st.path = null;
   st.dragging = true;
-  if (!st.targetCell || st.targetCell.cx !== cell.cx || st.targetCell.cy !== cell.cy) {
+
+  const cell = screenToCell(x, y);
+  if (cell) {
     st.targetCell = cell;
-    st.path = null;
+    computePreviewPath();
+  } else {
+    st.targetCell = null;
+    st.previewPath = null;
   }
 }
 
 function onPointerMove(x, y) {
   if (!st || st.phase !== 'play' || !st.dragging) return;
   const cell = screenToCell(x, y);
-  if (!cell) return;
+  if (!cell) return;      // kéo ra ngoài board → giữ target cũ
   if (st.targetCell && st.targetCell.cx === cell.cx && st.targetCell.cy === cell.cy) return;
   st.targetCell = cell;
-  st.path = null;
+  computePreviewPath();
 }
 
 function onPointerUp() {
   if (!st) return;
+  if (!st.dragging) return;
   st.dragging = false;
-  // targetCell stays until reached
+
+  // Chỉ commit path nếu có ít nhất 1 bước
+  if (st.previewPath && st.previewPath.length > 0) {
+    st.path = st.previewPath.slice();
+    sndCommit();
+    // Particle nhỏ ở chân player để báo hiệu "đi thôi!"
+    const p = playerPos();
+    for (let k = 0; k < 6; k++) addPart(p.x, p.y + 20, '#fff3a0', 80);
+  } else if (st.previewPath && st.previewPath.length === 0) {
+    // Target = current: không di chuyển, không báo lỗi
+  } else if (st.targetCell) {
+    // BFS thất bại
+    sndInvalid();
+  }
+  st.previewPath = null;
+  st.targetCell = null;
 }
 
 function onKeyDown(e) {
@@ -865,7 +1014,7 @@ function onKeyDown(e) {
     if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); endMemo(); }
     return;
   }
-  if (st.phase !== 'play' || st.mv) return;
+  if (st.phase !== 'play') return;
   const map = {
     ArrowUp: [0,-1], KeyW: [0,-1],
     ArrowDown: [0,1], KeyS: [0,1],
@@ -875,12 +1024,18 @@ function onKeyDown(e) {
   const d = map[e.code];
   if (!d) return;
   e.preventDefault();
+
+  // Bàn phím: huỷ path đang đi, đi từng bước 1
+  st.path = null;
+  st.targetCell = null;
+  st.previewPath = null;
+  st.dragging = false;
+
+  if (st.mv) return;  // đợi bước hiện tại xong
   const nx = st.cx + d[0], ny = st.cy + d[1];
   if (nx < 0 || ny < 0 || nx >= st.nW || ny >= st.nH) { sndBump(); st.nudge = { dx: d[0], dy: d[1], t: 0 }; return; }
   const i = ny * st.nW + nx;
   if (st.revealed[i]) { sndBump(); st.nudge = { dx: d[0], dy: d[1], t: 0 }; return; }
-  st.targetCell = null;
-  st.path = null;
   doStep(nx, ny);
 }
 
@@ -914,9 +1069,10 @@ const mod = {
   pointerUp(x, y, e) { onPointerUp(); },
   legend(el) {
     el.innerHTML = '<p class="note" style="margin:8px 0 0">' +
-      '🐕 Ghi nhớ vị trí chó → chó ẩn đi → <b>kéo chuột/ngón tay</b> để dẫn nhân vật tới nải chuối. ' +
-      'Tránh mọi ô có chó! Mỗi cấp có 3 mạng. Thua sẽ chơi lại với <b>bản đồ mới</b>. ' +
-      'Hoàn thành cả 4 cấp để qua ải.</p>';
+      '🐕 <b>Ghi nhớ vị trí chó</b> → chó ẩn đi → <b>kéo chuột/ngón tay</b> để vẽ đường đi. ' +
+      '<b>Nhả tay</b> để bắt đầu bước theo đường đã vẽ. ' +
+      'Đường màu vàng = đường sẽ đi, đường đỏ = bị chặn bởi chó đã lộ. ' +
+      'Mỗi cấp có 3 mạng, thua sẽ chơi lại với bản đồ mới. Hoàn thành cả 4 cấp để qua ải.</p>';
   }
 };
 
@@ -924,10 +1080,11 @@ const mod = {
 const LEVEL = {
   id: '18-tim-chuoi',
   title: 'Tìm Chuối, Tránh Chó',
-  desc: 'Ghi nhớ vị trí các chú chó, rồi kéo chuột dẫn nhân vật tới nải chuối mà không giẫm vào ô có chó. Hoàn thành cả 4 cấp để qua ải!',
+  desc: 'Ghi nhớ vị trí các chú chó, rồi kéo chuột vẽ đường tới nải chuối mà không giẫm vào ô có chó. Nhả tay để bắt đầu đi. Hoàn thành cả 4 cấp để qua ải!',
   rules: [
     'Các chú chó hiện ra một lúc — hãy ghi nhớ vị trí!',
-    'Chó ẩn đi, bạn kéo chuột/ngón tay để dẫn nhân vật đi',
+    'Chó ẩn đi — kéo chuột/ngón tay để vẽ đường đi',
+    'Nhả tay → nhân vật bắt đầu bước theo đường đã vẽ',
     'Đi tới nải chuối 🍌 mà không giẫm vào ô chó',
     'Mỗi cấp có ' + LIVES + ' mạng — thua sẽ chơi lại với bản đồ mới',
     'Hoàn thành cả ' + LEVELS.length + ' cấp để qua ải'
