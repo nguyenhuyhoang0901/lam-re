@@ -10,36 +10,48 @@ const COLORS = ['#f4a6a0','#f6c177','#f2e394','#a8d8a0','#8fd3d0','#9cc3f0','#b9
 const INK = '#16202a';
 const BG = '#eef1f4';
 
-// n: board size, adj: no-adjacent-kings rule, level: 3 = khó, 4 = rất khó
+// TẤT CẢ 6 mode đều level 5 = bắt buộc dùng giả định thử-sai để giải
 const MODES = {
-  normal: { n: 7, adj: false, level: 3, label: 'Khó' },
-  ultra:  { n: 6, adj: true,  level: 3, label: 'Siêu Khó' }
+  'hard-7':  { n: 7, adj: false, level: 5 },
+  'hard-8':  { n: 8, adj: false, level: 5 },
+  'hard-9':  { n: 9, adj: false, level: 5 },
+  'ultra-7': { n: 7, adj: true,  level: 5 },
+  'ultra-8': { n: 8, adj: true,  level: 5 },
+  'ultra-9': { n: 9, adj: true,  level: 5 }
 };
+const DEFAULT_MODE = 'hard-7';
+
+// Budget/rate đều tăng vì puzzle level-5 hiếm và chậm để verify
+function getBudget(cfg) {
+  // 7s, 8s, 9s — cộng thêm cho adj mode (khó tìm hơn)
+  return 7000 + Math.max(0, cfg.n - 7) * 1000 + (cfg.adj ? 2000 : 0);
+}
+function getRateLimit(cfg) {
+  // đủ dài để chạy solver xác nhận requiresTrial
+  return 1500 + cfg.n * 80;
+}
 
 /* ================= STATE ================= */
 let st = null;
 let geo = null;
 
 function newState(modeId) {
+  const cfg = MODES[modeId] || MODES[DEFAULT_MODE];
   return {
-    modeId,
-    cfg: MODES[modeId] || MODES.normal,
-    state: 'loading',   // 'loading' | 'playing' | 'won'
-    n: 0, adj: false, level: 3,
+    modeId, cfg,
+    state: 'loading',
+    n: cfg.n, adj: cfg.adj, level: cfg.level,
     sol: [], reg: [],
-    cells: [],
-    hist: [],
-    hint: null,
-    hints: 0,
-    time: 0,
-    winTimer: 0,
-    genToken: 0,
-    genProgress: 0,
-    buttons: []
+    cells: [], hist: [],
+    hint: null, hints: 0,
+    time: 0, winTimer: 0,
+    genToken: 0, genProgress: 0,
+    buttons: [],
+    trialHints: 0  // số bước trial trong solution path (thông tin)
   };
 }
 
-/* ================= PUZZLE GEN ================= */
+/* ================= PUZZLE GENERATION ================= */
 const shuffle = a => { for (let i = a.length-1; i > 0; i--) { const j = (Math.random()*(i+1))|0; [a[i],a[j]] = [a[j],a[i]]; } return a; };
 
 function neighbors(i, n) {
@@ -53,7 +65,7 @@ function neighbors(i, n) {
 
 function genSolution(n, adj) {
   const cols = [], used = new Set();
-  (function bt(r) {
+  const ok = (function bt(r) {
     if (r === n) return true;
     for (const c of shuffle([...Array(n).keys()])) {
       if (used.has(c)) continue;
@@ -64,7 +76,7 @@ function genSolution(n, adj) {
     }
     return false;
   })(0);
-  return cols;
+  return ok ? cols : null;
 }
 
 function grow(n, sol) {
@@ -158,7 +170,17 @@ function mutateCopy(g, n, sol) {
   return null;
 }
 
-/* ================= REASONING (dùng cho rate + hint) ================= */
+function makePuzzleSimple(n, adj) {
+  for (let i = 0; i < 20; i++) {
+    const b = baseUnique(n, adj);
+    if (b) return b;
+  }
+  const sol = genSolution(n, adj);
+  if (sol && sol.length === n) return { sol, reg: grow(n, sol) };
+  return null;
+}
+
+/* ================= REASONING ================= */
 const KINDS = ['row', 'col', 'reg'];
 const NAME = { row: 'hàng', col: 'cột', reg: 'mảng màu' };
 
@@ -286,24 +308,42 @@ function findAdj(S) {
   return null;
 }
 
+/* ---------- LEVEL 5: TRIAL / GIẢ ĐỊNH ---------- */
 function findTrial(S, timeLimit) {
   const n = S.ctx.n;
   const tStart = performance.now();
+  const tl = timeLimit || 250;
+
+  const cells = [];
   for (let x = 0; x < n*n; x++) {
-    if (performance.now() - tStart > (timeLimit || 100)) return null;
     if (!S.cand[x]) continue;
+    let priority = 0;
+    for (const kind of KINDS) {
+      const u = lineOf(S.ctx, kind, x);
+      const cnt = candList(S, kind, u).length;
+      priority += Math.max(0, 5 - cnt);
+    }
+    cells.push({ x, priority });
+  }
+  cells.sort((a, b) => b.priority - a.priority);
+  const maxTries = Math.min(cells.length, n <= 7 ? 24 : 14);
+
+  for (let t = 0; t < maxTries; t++) {
+    if (performance.now() - tStart > tl) return null;
+    const x = cells[t].x;
     const T = cloneRState(S);
     placeR(T, x);
     let bad = false;
     for (let g = 0; g < 200; g++) {
-      const s = findSingles(T);
+      const s = findSingles(T) || findGroup(T, 1);
       if (!s) break;
       if (s.contra) { bad = true; break; }
-      placeR(T, s.place);
+      if (s.place !== undefined) placeR(T, s.place);
+      else for (const i of s.elim) T.cand[i] = 0;
     }
     if (bad) return {
       level: 5, elim: [x], target: [],
-      msg: `Thử đặt vua vào ô gạch đỏ: các ô còn lại sẽ lần lượt bị ép và dẫn tới mâu thuẫn. Vì vậy ô này không có vua.`
+      msg: `Giả định đặt vua vào ô gạch đỏ (${rcOf(n, x)}): lan truyền suy luận dẫn tới mâu thuẫn (một hàng/cột/mảng hết ô hợp lệ). Vậy ${rcOf(n, x)} không thể có vua.`
     };
   }
   return null;
@@ -314,15 +354,35 @@ function findStep(S, allowTrial) {
          findGroup(S, 3) || findGroup(S, 4) || (allowTrial ? findTrial(S) : null);
 }
 
-function rate(n, g, adj, level, timeLimit) {
-  const W = [0, 1, 4, 14, 40, level === 3 ? -40 : -12];
+/* ---------- VERIFY: PUZZLE THỰC SỰ CẦN TRIAL ---------- */
+// Chạy solver với CHỈ kỹ thuật 1-4. Nếu kẹt giữa chừng → puzzle cần trial.
+function requiresTrial(n, g, adj, timeLimit) {
+  const ctx = makeCtx(n, g, adj);
+  const S = newReasonState(ctx);
   const tStart = performance.now();
-  const tl = timeLimit || 300;
+  const tl = timeLimit || 2500;
+  for (let it = 0; it < 400 && S.placed < n; it++) {
+    if (performance.now() - tStart > tl) return true;
+    const step = findStep(S, false);
+    if (!step || step.contra) return true;
+    if (step.place !== undefined) placeR(S, step.place);
+    else for (const i of step.elim) S.cand[i] = 0;
+  }
+  return S.placed < n;
+}
+
+/* ---------- RATE ---------- */
+function rate(n, g, adj, level, timeLimit) {
+  // Level-5 LUÔN được thưởng lớn vì đây là mode chính
+  const W = [0, 1, 4, 14, 40, 400];
+  const tStart = performance.now();
+  const tl = timeLimit || 800;
   const ctx = makeCtx(n, g, adj);
   const S = newReasonState(ctx);
   let max = 0, score = 0;
   const cnt = [0, 0, 0, 0, 0, 0];
-  for (let it = 0; it < 400 && S.placed < n; it++) {
+
+  for (let it = 0; it < 500 && S.placed < n; it++) {
     if (performance.now() - tStart > tl) return { ok: false };
     const step = findStep(S, true);
     if (!step || step.contra) return { ok: false };
@@ -333,19 +393,17 @@ function rate(n, g, adj, level, timeLimit) {
     cnt[step.level]++;
   }
   if (S.placed < n) return { ok: false };
+
   const cc = Array(n).fill(0);
   g.forEach(k => cc[k]++);
   score -= 40 * cc.filter(x => x === 1).length;
-  const meets = max >= (level === 3 ? 3 : 4) && cnt[5] <= (level === 3 ? 0 : 2);
-  return { ok: true, max, score, cnt, meets, key: score + (meets ? 100000 : 0) };
-}
 
-function makePuzzleSimple(n, adj) {
-  for (let i = 0; i < 200; i++) {
-    const b = baseUnique(n, adj);
-    if (b) return b;
-  }
-  return null;
+  // TẤT CẢ mode đều yêu cầu trial bắt buộc
+  const meets = (max >= 5 && cnt[5] >= 1 && requiresTrial(n, g, adj));
+
+  return { ok: true, max, score, cnt, meets,
+    trialCount: cnt[5],
+    key: score + (meets ? 100000 : 0) };
 }
 
 /* ================= ASYNC GENERATION ================= */
@@ -353,20 +411,26 @@ function startGeneration(cfg) {
   st.state = 'loading';
   st.genProgress = 0;
   const token = ++st.genToken;
-  const budget = cfg.adj ? 2500 : 1500;
+  const budget = getBudget(cfg);
+  const rateLimit = getRateLimit(cfg);
   const tStart = performance.now();
   let best = null;
   let cur = null;
   let stagn = 0;
 
   function finish(p) {
+    if (st.genToken !== token) return;
     if (!p) {
-      // Extreme fallback
       const p2 = makePuzzleSimple(cfg.n, cfg.adj);
-      if (p2) { finish(p2); return; }
-      // Give up - shouldn't happen
-      st.state = 'playing';
-      return;
+      if (p2) p = p2;
+      else {
+        st.n = cfg.n; st.adj = cfg.adj; st.level = cfg.level;
+        st.sol = []; st.reg = [];
+        st.cells = new Array(cfg.n * cfg.n).fill(0);
+        st.state = 'playing';
+        computeLayout();
+        return;
+      }
     }
     st.n = cfg.n;
     st.adj = cfg.adj;
@@ -377,6 +441,7 @@ function startGeneration(cfg) {
     st.hist = [];
     st.hint = null;
     st.hints = 0;
+    st.trialHints = p.r ? p.r.trialCount : 0;
     st.time = 0;
     st.winTimer = 0;
     st.state = 'playing';
@@ -388,12 +453,12 @@ function startGeneration(cfg) {
     if (st.genToken !== token) return;
     if (st.state !== 'loading') return;
 
-    const end = performance.now() + 28;
+    const end = performance.now() + 26;
     while (performance.now() < end) {
       if (!cur) {
         const b = baseUnique(cfg.n, cfg.adj);
         if (b) {
-          const r = rate(cfg.n, b.reg, cfg.adj, cfg.level);
+          const r = rate(cfg.n, b.reg, cfg.adj, cfg.level, rateLimit);
           if (r.ok) {
             cur = { sol: b.sol, reg: b.reg, r };
             stagn = 0;
@@ -405,7 +470,7 @@ function startGeneration(cfg) {
       const ng = mutateCopy(cur.reg, cfg.n, cur.sol);
       if (!ng) { stagn++; if (stagn > 100) cur = null; continue; }
       if (solve(ng, cfg.n, cfg.adj, 2).length !== 1) { stagn++; if (stagn > 100) cur = null; continue; }
-      const r = rate(cfg.n, ng, cfg.adj, cfg.level);
+      const r = rate(cfg.n, ng, cfg.adj, cfg.level, rateLimit);
       if (r.ok) {
         if (r.key > cur.r.key) {
           cur = { sol: cur.sol, reg: ng, r };
@@ -419,13 +484,18 @@ function startGeneration(cfg) {
     const el = performance.now() - tStart;
     st.genProgress = Math.min(1, el / budget);
 
-    if (best && (el > budget || (best.r.meets && el > budget * 0.6))) {
+    // Điều kiện dừng: đã có ván meets hoặc hết budget
+    if (best && best.r.meets && el > budget * 0.6) {
       finish(best);
       return;
     }
-    if (!best && el > budget * 2.5) {
-      const p = makePuzzleSimple(cfg.n, cfg.adj);
-      finish(p);
+    if (best && el > budget * 1.5) {
+      // Hết budget mở rộng mà vẫn chưa meets → vẫn dùng best (kèm cảnh báo ngầm)
+      finish(best);
+      return;
+    }
+    if (!best && el > budget * 1.2) {
+      finish(null);
       return;
     }
     setTimeout(step, 0);
@@ -436,6 +506,7 @@ function startGeneration(cfg) {
 /* ================= LAYOUT ================= */
 function computeLayout() {
   const G = LR.G;
+  if (!st || st.n < 1) { geo = null; return; }
   const top = G.top || 0;
   const bottomH = 66;
   const pad = 14;
@@ -447,27 +518,27 @@ function computeLayout() {
   const by = top + pad + (availH - boardSize) / 2;
   geo = { cs, bx, by, boardSize };
 
-  // 4 buttons at bottom
   const btnY = G.H - bottomH + 4;
   const btnH = 44;
   const gap = 6;
   const btnW = (availW - gap * 3) / 4;
   st.buttons = [
-    { id: 'hint',  x: pad,                 y: btnY, w: btnW, h: btnH, label: '💡 Gợi ý', primary: true },
-    { id: 'undo',  x: pad + btnW + gap,    y: btnY, w: btnW, h: btnH, label: '↶ Hoàn tác' },
-    { id: 'clear', x: pad + (btnW+gap)*2,  y: btnY, w: btnW, h: btnH, label: '🗑 Xóa' },
-    { id: 'new',   x: pad + (btnW+gap)*3,  y: btnY, w: btnW, h: btnH, label: '🔄 Mới' }
+    { id: 'hint',  x: pad,                y: btnY, w: btnW, h: btnH, label: '💡 Gợi ý', primary: true },
+    { id: 'undo',  x: pad + btnW + gap,   y: btnY, w: btnW, h: btnH, label: '↶ Hoàn tác' },
+    { id: 'clear', x: pad + (btnW+gap)*2, y: btnY, w: btnW, h: btnH, label: '🗑 Xóa' },
+    { id: 'new',   x: pad + (btnW+gap)*3, y: btnY, w: btnW, h: btnH, label: '🔄 Mới' }
   ];
 }
 
 /* ================= HINT ================= */
 function rc(i) { return `hàng ${((i/st.n)|0)+1}, cột ${i%st.n+1}`; }
 function getHintInfo() {
+  const N = st.n;
+  if (!st.sol.length) return { msg: 'Ván chưa sẵn sàng. Nhấn "Mới" để thử lại.', target: [], elim: [] };
+
   const kings = [];
   st.cells.forEach((v, i) => { if (v === 2) kings.push(i); });
-  const N = st.n;
 
-  // Wrong kings?
   const wrong = kings.filter(i => st.sol[(i/N)|0] !== i%N);
   if (wrong.length) {
     return {
@@ -476,7 +547,6 @@ function getHintInfo() {
       target: wrong, elim: []
     };
   }
-  // Wrong X?
   const wrongX = [];
   st.cells.forEach((v, i) => { if (v === 1 && st.sol[(i/N)|0] === i%N) wrongX.push(i); });
   if (wrongX.length) {
@@ -484,31 +554,29 @@ function getHintInfo() {
   }
   if (kings.length === N) return { msg: 'Bàn đã đủ vua.', target: [], elim: [] };
 
-  // Deduce next step
   const ctx = makeCtx(N, st.reg, st.adj);
   const S = newReasonState(ctx);
   kings.forEach(i => placeR(S, i));
   st.cells.forEach((v, i) => { if (v === 1) S.cand[i] = 0; });
   const step = findStep(S, true);
   if (step && !step.contra) {
-    const lv = ['', 'cơ bản', 'nâng cao', 'nhóm 2 đường', 'nhóm 3 đường', 'thử giả định'][step.level];
+    const lv = ['', 'cơ bản', 'nâng cao', 'nhóm 2 đường', 'nhóm 3-4 đường', 'giả định (thử sai)'][step.level];
     return {
       msg: step.msg + ` (Kỹ thuật: ${lv})`,
       target: step.target || [],
       elim: step.elim || []
     };
   }
-  // Fallback: suggest a valid row
   let bestR = -1, bestN = 99;
   for (let r = 0; r < N; r++) {
-    if (kings.some(i => (i/N|0) === r)) continue;
+    if (kings.some(i => ((i/N)|0) === r)) continue;
     let n = 0;
     for (let c = 0; c < N; c++) if (S.cand[r*N+c]) n++;
     if (n < bestN) { bestN = n; bestR = r; }
   }
-  if (bestR < 0) return { msg: 'Thế cờ này rất phức tạp. Thử bỏ bớt các dấu × để gợi ý dễ hơn.', target: [], elim: [] };
+  if (bestR < 0) return { msg: 'Thế cờ phức tạp. Thử xoá bớt × để gợi ý dễ hơn.', target: [], elim: [] };
   const cell = bestR * N + st.sol[bestR];
-  return { msg: `Thế cờ này cần suy luận rất sâu. Thử đặt vua tại ${rc(cell)} (ô viền vàng).`, target: [cell], elim: [] };
+  return { msg: `Thế cờ cần suy luận rất sâu. Thử đặt vua tại ${rc(cell)} (ô viền vàng).`, target: [cell], elim: [] };
 }
 
 /* ================= ACTIONS ================= */
@@ -546,18 +614,19 @@ function doCellClick(i) {
   else Sound.sfx.click();
   checkWin();
 }
+
 function checkWin() {
-  const kings = [], N = st.n;
+  const N = st.n;
+  if (!st.sol.length) return;
+  const kings = [];
   st.cells.forEach((v, i) => { if (v === 2) kings.push(i); });
   if (kings.length !== N) return;
-  // No conflicts?
   for (let a = 0; a < kings.length; a++) for (let b = a+1; b < kings.length; b++) {
     const ra = (kings[a]/N)|0, ca = kings[a]%N;
     const rb = (kings[b]/N)|0, cb = kings[b]%N;
     if (ra === rb || ca === cb || st.reg[kings[a]] === st.reg[kings[b]]) return;
     if (st.adj && Math.abs(ra - rb) <= 1 && Math.abs(ca - cb) <= 1) return;
   }
-  // Also verify solution match
   const match = kings.every(i => st.sol[(i/N)|0] === i%N);
   if (!match) return;
   st.state = 'won';
@@ -565,17 +634,22 @@ function checkWin() {
   Sound.sfx.win();
   setTimeout(() => Sound.sfx.win(), 300);
 }
+
 function finishWin() {
   const stars = st.hints === 0 ? 3 : st.hints <= 3 ? 2 : 1;
   const score = Math.max(100, 5000 - st.hints * 500 - Math.floor(st.time) * 2);
+  const secs = Math.floor(st.time);
+  const tStr = String(Math.floor(secs/60)).padStart(2,'0') + ':' + String(secs%60).padStart(2,'0');
+  const modeLabel = st.adj ? 'Siêu Khó' : 'Rất Khó';
   LR.G.finish({
     win: true, score, stars,
     title: 'GIẢI XONG!',
     msg: `Bạn đã xếp đủ ${st.n} vua không xung đột${st.adj ? ' (kể cả chéo)' : ''}!`,
     rows: [
-      ['Thời gian', Math.floor(st.time/60) + ':' + String(Math.floor(st.time%60)).padStart(2,'0')],
+      ['Thời gian', tStr],
       ['Gợi ý dùng', st.hints],
-      ['Chế độ', st.adj ? 'Siêu Khó' : 'Khó'],
+      ['Chế độ', modeLabel + ' · ' + st.n + '×' + st.n],
+      ['Bước giả định', st.trialHints + ' lần'],
       ['Điểm', score]
     ]
   });
@@ -590,13 +664,12 @@ function update(dt) {
     st.winTimer -= dt;
     if (st.winTimer <= 0) finishWin();
   }
-  // HUD
   const kings = st.cells.filter(v => v === 2).length;
   const secs = Math.floor(st.time);
   const tStr = String(Math.floor(secs/60)).padStart(2,'0') + ':' + String(secs%60).padStart(2,'0');
   LR.G.hud.set([
     { l: 'Vua', v: kings + '/' + st.n },
-    { l: 'Thời gian', v: tStr },
+    { l: 'Giờ', v: tStr },
     { l: 'Gợi ý', v: st.hints }
   ]);
 }
@@ -620,13 +693,8 @@ function drawKing(ctx, cx, cy, size) {
   ctx.fillStyle = '#1b1b1b';
   ctx.fillRect(3, 19, 18, 2);
   ctx.beginPath();
-  ctx.moveTo(3, 7);
-  ctx.lineTo(8, 12);
-  ctx.lineTo(12, 5);
-  ctx.lineTo(16, 12);
-  ctx.lineTo(21, 7);
-  ctx.lineTo(19, 17);
-  ctx.lineTo(5, 17);
+  ctx.moveTo(3, 7); ctx.lineTo(8, 12); ctx.lineTo(12, 5); ctx.lineTo(16, 12);
+  ctx.lineTo(21, 7); ctx.lineTo(19, 17); ctx.lineTo(5, 17);
   ctx.closePath();
   ctx.fill();
   ctx.restore();
@@ -635,62 +703,44 @@ function drawKing(ctx, cx, cy, size) {
 function drawX(ctx, cx, cy, size) {
   const half = size * 0.17;
   ctx.strokeStyle = 'rgba(27, 27, 27, 0.55)';
-  ctx.lineWidth = size * 0.06;
+  ctx.lineWidth = Math.max(1.5, size * 0.06);
   ctx.lineCap = 'round';
   ctx.beginPath();
-  ctx.moveTo(cx - half, cy - half);
-  ctx.lineTo(cx + half, cy + half);
-  ctx.moveTo(cx + half, cy - half);
-  ctx.lineTo(cx - half, cy + half);
+  ctx.moveTo(cx - half, cy - half); ctx.lineTo(cx + half, cy + half);
+  ctx.moveTo(cx + half, cy - half); ctx.lineTo(cx - half, cy + half);
   ctx.stroke();
 }
 
 function drawBoard(ctx) {
+  if (!geo) return;
   const { cs, bx, by, boardSize } = geo;
   const n = st.n;
+  const hasSol = st.reg.length === n*n;
 
-  // Outer frame
   ctx.fillStyle = INK;
   ctx.fillRect(bx - 3, by - 3, boardSize + 6, boardSize + 6);
 
-  // Cells
-  for (let r = 0; r < n; r++) {
-    for (let c = 0; c < n; c++) {
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
+    const i = r * n + c;
+    const regIdx = hasSol ? st.reg[i] : 0;
+    ctx.fillStyle = COLORS[regIdx % COLORS.length];
+    ctx.fillRect(bx + c*cs, by + r*cs, cs, cs);
+  }
+
+  if (hasSol) {
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = Math.max(2, cs * 0.06);
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
       const i = r * n + c;
-      const x = bx + c * cs;
-      const y = by + r * cs;
+      const x = bx + c*cs, y = by + r*cs;
       const reg = st.reg[i];
-      ctx.fillStyle = COLORS[reg % COLORS.length];
-      ctx.fillRect(x, y, cs, cs);
+      if (r === 0 || st.reg[i - n] !== reg) { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + cs, y); ctx.stroke(); }
+      if (c === 0 || st.reg[i - 1] !== reg) { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + cs); ctx.stroke(); }
+      if (r === n - 1) { ctx.beginPath(); ctx.moveTo(x, y + cs); ctx.lineTo(x + cs, y + cs); ctx.stroke(); }
+      if (c === n - 1) { ctx.beginPath(); ctx.moveTo(x + cs, y); ctx.lineTo(x + cs, y + cs); ctx.stroke(); }
     }
   }
 
-  // Region borders
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 2.5;
-  ctx.lineCap = 'butt';
-  for (let r = 0; r < n; r++) {
-    for (let c = 0; c < n; c++) {
-      const i = r * n + c;
-      const x = bx + c * cs;
-      const y = by + r * cs;
-      const reg = st.reg[i];
-      if (r === 0 || st.reg[i - n] !== reg) {
-        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + cs, y); ctx.stroke();
-      }
-      if (c === 0 || st.reg[i - 1] !== reg) {
-        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + cs); ctx.stroke();
-      }
-      if (r === n - 1) {
-        ctx.beginPath(); ctx.moveTo(x, y + cs); ctx.lineTo(x + cs, y + cs); ctx.stroke();
-      }
-      if (c === n - 1) {
-        ctx.beginPath(); ctx.moveTo(x + cs, y); ctx.lineTo(x + cs, y + cs); ctx.stroke();
-      }
-    }
-  }
-
-  // Hint highlights (below pieces)
   if (st.hint) {
     for (const i of (st.hint.elim || [])) {
       const x = bx + (i%n) * cs, y = by + ((i/n)|0) * cs;
@@ -700,8 +750,7 @@ function drawBoard(ctx) {
       ctx.lineWidth = 3;
       for (let d = -cs; d < cs*2; d += 10) {
         ctx.beginPath();
-        ctx.moveTo(x + d, y);
-        ctx.lineTo(x + d + cs, y + cs);
+        ctx.moveTo(x + d, y); ctx.lineTo(x + d + cs, y + cs);
         ctx.stroke();
       }
       ctx.restore();
@@ -714,19 +763,19 @@ function drawBoard(ctx) {
     }
   }
 
-  // Conflict detection
   const conflicts = new Set();
   const kingIdx = [];
   st.cells.forEach((v, i) => { if (v === 2) kingIdx.push(i); });
-  for (let a = 0; a < kingIdx.length; a++) for (let b = a+1; b < kingIdx.length; b++) {
-    const ra = (kingIdx[a]/n)|0, ca = kingIdx[a]%n;
-    const rb = (kingIdx[b]/n)|0, cb = kingIdx[b]%n;
-    const bad = ra === rb || ca === cb || st.reg[kingIdx[a]] === st.reg[kingIdx[b]]
-              || (st.adj && Math.abs(ra-rb) <= 1 && Math.abs(ca-cb) <= 1);
-    if (bad) { conflicts.add(kingIdx[a]); conflicts.add(kingIdx[b]); }
+  if (hasSol) {
+    for (let a = 0; a < kingIdx.length; a++) for (let b = a+1; b < kingIdx.length; b++) {
+      const ra = (kingIdx[a]/n)|0, ca = kingIdx[a]%n;
+      const rb = (kingIdx[b]/n)|0, cb = kingIdx[b]%n;
+      const bad = ra === rb || ca === cb || st.reg[kingIdx[a]] === st.reg[kingIdx[b]]
+                || (st.adj && Math.abs(ra-rb) <= 1 && Math.abs(ca-cb) <= 1);
+      if (bad) { conflicts.add(kingIdx[a]); conflicts.add(kingIdx[b]); }
+    }
   }
 
-  // Pieces
   for (let i = 0; i < n*n; i++) {
     const cx = bx + (i%n) * cs + cs/2;
     const cy = by + ((i/n)|0) * cs + cs/2;
@@ -735,7 +784,6 @@ function drawBoard(ctx) {
       if (conflicts.has(i)) {
         ctx.fillStyle = '#d23b3b';
         ctx.beginPath(); ctx.arc(cx, cy, cs * 0.34, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle = '#ffffff';
         drawKing(ctx, cx, cy, cs * 0.6);
       } else {
         drawKing(ctx, cx, cy, cs * 0.6);
@@ -769,12 +817,18 @@ function drawLoading(ctx) {
   ctx.font = '700 18px "Be Vietnam Pro", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('Đang tạo ván…', G.W/2, G.H/2 - 30);
-  // Progress bar
+
+  const modeLabel = st.cfg.adj ? 'Siêu Khó' : 'Rất Khó';
+  ctx.fillText('Đang tạo ván ' + modeLabel + ' ' + st.cfg.n + '×' + st.cfg.n + '…', G.W/2, G.H/2 - 40);
+
+  ctx.font = '600 12px "Be Vietnam Pro", sans-serif';
+  ctx.fillStyle = 'rgba(22,32,42,0.7)';
+  ctx.fillText('Đang dò ván BẮT BUỘC dùng giả định thử-sai…', G.W/2, G.H/2 - 14);
+
   const barW = Math.min(240, G.W - 60);
   const barH = 10;
   const bx = (G.W - barW) / 2;
-  const by = G.H/2 + 10;
+  const by = G.H/2 + 14;
   ctx.strokeStyle = INK;
   ctx.lineWidth = 2;
   roundRect(ctx, bx, by, barW, barH, 5);
@@ -783,10 +837,10 @@ function drawLoading(ctx) {
   ctx.fillStyle = '#b8860b';
   roundRect(ctx, bx + 1, by + 1, (barW - 2) * pct, barH - 2, 4);
   ctx.fill();
-  // Hint text
-  ctx.fillStyle = 'rgba(22,32,42,0.5)';
-  ctx.font = '500 12px "Be Vietnam Pro", sans-serif';
-  ctx.fillText('Đang dò ván khó với lời giải duy nhất…', G.W/2, G.H/2 + 42);
+
+  ctx.fillStyle = 'rgba(184, 134, 11, 0.85)';
+  ctx.font = '600 11px "Be Vietnam Pro", sans-serif';
+  ctx.fillText('⚠️ Ván giả định cần nhiều thời gian tạo (7-11 giây)', G.W/2, G.H/2 + 48);
 }
 
 function drawWonOverlay(ctx) {
@@ -795,7 +849,7 @@ function drawWonOverlay(ctx) {
   ctx.fillStyle = 'rgba(184, 134, 11, 0.15)';
   ctx.fillRect(0, 0, G.W, G.H);
   ctx.fillStyle = '#b8860b';
-  ctx.font = '900 36px "Be Vietnam Pro", sans-serif';
+  ctx.font = '900 34px "Be Vietnam Pro", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.strokeStyle = '#ffffff';
@@ -803,35 +857,6 @@ function drawWonOverlay(ctx) {
   ctx.strokeText('🎉 GIẢI XONG!', G.W/2, G.H * 0.4);
   ctx.fillText('🎉 GIẢI XONG!', G.W/2, G.H * 0.4);
   ctx.restore();
-}
-
-function draw() {
-  const G = LR.G, ctx = G.ctx;
-  if (!ctx || !st) return;
-  const dpr = G.dpr || 1;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, G.W, G.H);
-
-  if (st.state === 'loading') { drawLoading(ctx); return; }
-
-  ctx.fillStyle = BG;
-  ctx.fillRect(0, 0, G.W, G.H);
-
-  drawBoard(ctx);
-  drawButtons(ctx);
-
-  if (st.hint) {
-    // Hint message above buttons
-    const msgY = geo.by + geo.boardSize + 10;
-    ctx.fillStyle = 'rgba(22,32,42,0.85)';
-    ctx.font = '600 11px "Be Vietnam Pro", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    const maxW = G.W - 24;
-    wrapText(ctx, st.hint.msg, G.W/2, msgY, maxW, 14, '#ffffff');
-  }
-
-  if (st.state === 'won') drawWonOverlay(ctx);
 }
 
 function wrapText(ctx, text, cx, y, maxW, lh, color) {
@@ -851,14 +876,38 @@ function wrapText(ctx, text, cx, y, maxW, lh, color) {
   if (line) ctx.fillText(line, cx, curY);
 }
 
+function draw() {
+  const G = LR.G, ctx = G.ctx;
+  if (!ctx || !st) return;
+  const dpr = G.dpr || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, G.W, G.H);
+
+  if (st.state === 'loading') { drawLoading(ctx); return; }
+  if (!geo) return;
+
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, G.W, G.H);
+
+  drawBoard(ctx);
+  drawButtons(ctx);
+
+  if (st.hint) {
+    const msgY = geo.by + geo.boardSize + 8;
+    ctx.fillStyle = 'rgba(22,32,42,0.85)';
+    ctx.font = '600 11px "Be Vietnam Pro", sans-serif';
+    wrapText(ctx, st.hint.msg, G.W/2, msgY, G.W - 24, 14, '#ffffff');
+  }
+
+  if (st.state === 'won') drawWonOverlay(ctx);
+}
+
 /* ================= INPUT ================= */
 function onPointerDown(x, y, e) {
   if (!st) return;
   Sound.init();
-  if (st.state === 'loading') return;
-  if (st.state === 'won') return;
+  if (st.state === 'loading' || st.state === 'won') return;
 
-  // Buttons
   for (const btn of st.buttons) {
     if (x >= btn.x && x <= btn.x + btn.w && y >= btn.y && y <= btn.y + btn.h) {
       if (btn.id === 'hint')  doHint();
@@ -869,7 +918,7 @@ function onPointerDown(x, y, e) {
     }
   }
 
-  // Board
+  if (!geo) return;
   if (x >= geo.bx && x <= geo.bx + geo.boardSize &&
       y >= geo.by && y <= geo.by + geo.boardSize) {
     const c = Math.floor((x - geo.bx) / geo.cs);
@@ -883,17 +932,14 @@ function onPointerDown(x, y, e) {
 /* ================= MOD ================= */
 const mod = {
   enter(opts) {
-    const modeId = (opts && opts.mode) || 'normal';
+    const modeId = (opts && opts.mode && MODES[opts.mode]) ? opts.mode : DEFAULT_MODE;
     st = newState(modeId);
     computeLayout();
     Sound.init();
     startGeneration(st.cfg);
   },
   exit() {
-    if (st) {
-      st.genToken++;  // cancel any pending generation
-      st = null;
-    }
+    if (st) { st.genToken++; st = null; }
     geo = null;
   },
   resize() {
@@ -905,10 +951,9 @@ const mod = {
   pointerDown(x, y, e) { onPointerDown(x, y, e); },
   legend(el) {
     el.innerHTML = '<p class="note" style="margin:8px 0 0">' +
-      '♔ Mỗi mảng màu đặt <b>1 vua</b>. Mỗi hàng và mỗi cột đúng <b>1 vua</b>. ' +
-      'Chạm ô: lần 1 = ✕, lần 2 = ♔, lần 3 = trống. ' +
-      'Ở chế độ <b>Siêu Khó</b>, hai vua <b>không được kề nhau kể cả chéo</b>. ' +
-      'Ván có lời giải duy nhất — dùng gợi ý nếu bí!</p>';
+      '♔ Mỗi mảng màu 1 vua. Mỗi hàng/cột 1 vua. Chạm ô: ✕ → ♔ → trống. ' +
+      '<b>TẤT CẢ chế độ</b> đều bắt buộc phải dùng <b>suy luận giả định (thử-sai)</b> để giải — ' +
+      'suy luận trực tiếp sẽ bế tắc. Ván có lời giải duy nhất.</p>';
   }
 };
 
@@ -916,21 +961,26 @@ const mod = {
 const LEVEL = {
   id: '20-xep-vua',
   title: 'Xếp Vua',
-  desc: 'Mỗi mảng màu một vua. Mỗi hàng, mỗi cột đúng một vua. Chế độ Siêu Khó: hai vua không được kề nhau kể cả chéo!',
+  desc: 'Mỗi mảng màu một vua. Mỗi hàng, mỗi cột đúng một vua. Mọi chế độ đều bắt buộc phải dùng suy luận giả định thử-sai để giải!',
   rules: [
     'Mỗi mảng màu đặt <b>1 vua</b> ♔',
     'Mỗi hàng và mỗi cột có <b>đúng 1 vua</b>',
     'Hai vua không được cùng hàng, cột hoặc mảng màu',
-    '<b>Chế độ Siêu Khó:</b> hai vua còn không được kề nhau kể cả chéo',
+    '<b>Siêu Khó:</b> hai vua còn không được kề nhau (kể cả chéo)',
+    '<b>Mọi chế độ:</b> bắt buộc phải dùng <b>giả định thử-sai</b> mới giải được',
     'Chạm ô để đổi trạng thái: ✕ → ♔ → trống',
-    'Dùng Gợi ý / Hoàn tác / Xóa / Ván mới khi cần'
+    'Mỗi ván có lời giải duy nhất — dùng gợi ý khi bí'
   ],
   status: 'ready',
   pad: false,
   actLabel: 'ĐẶT',
   modes: [
-    { id: 'normal', name: 'Khó', sub: '7×7 · Vua có thể kề nhau' },
-    { id: 'ultra',  name: 'Siêu Khó', sub: '6×6 · Vua KHÔNG được kề nhau (kể cả chéo)' }
+    { id: 'hard-7',  name: 'Rất khó 7×7',  sub: '7×7 · bắt buộc giả định' },
+    { id: 'hard-8',  name: 'Rất khó 8×8',  sub: '8×8 · bắt buộc giả định' },
+    { id: 'hard-9',  name: 'Rất khó 9×9',  sub: '9×9 · bắt buộc giả định' },
+    { id: 'ultra-7', name: 'Siêu khó 7×7', sub: '7×7 · không kề + giả định' },
+    { id: 'ultra-8', name: 'Siêu khó 8×8', sub: '8×8 · không kề + giả định' },
+    { id: 'ultra-9', name: 'Siêu khó 9×9', sub: '9×9 · không kề + giả định' }
   ],
   mod
 };
