@@ -1015,4 +1015,237 @@ function render() {
 
     const ds = dogScale(i);
     if (ds > 0) {
-      ctx.fill
+      ctx.fillStyle = 'rgba(240,150,90,' + (0.55 * Math.min(1, ds)) + ')';
+      ctx.fillRect(x, y, cs, cs);
+    }
+  }
+
+  ctx.strokeStyle = 'rgba(42,26,18,.35)';
+  ctx.lineWidth = 1;
+  for (let k = 0; k <= nW; k++) {
+    ctx.beginPath(); ctx.moveTo(bx + k*cs, by); ctx.lineTo(bx + k*cs, by + nH*cs); ctx.stroke();
+  }
+  for (let k = 0; k <= nH; k++) {
+    ctx.beginPath(); ctx.moveTo(bx, by + k*cs); ctx.lineTo(bx + nW*cs, by + k*cs); ctx.stroke();
+  }
+
+  drawWalkPath(ctx);
+  drawPathPreview(ctx);
+
+  const u = cs / 100;
+  for (let i = 0; i < nW * nH; i++) {
+    const sc = dogScale(i);
+    if (sc <= 0) continue;
+    const c = cellCenter(i);
+    const angry = !!st.revealed[i] || st.phase === 'fail';
+    drawDog(ctx, c.x, c.y, u * 0.95, sc, angry);
+  }
+
+  const showAll = st.phase === 'play' || st.phase === 'hurt' || st.phase === 'win' || st.phase === 'fail';
+  if (showAll) {
+    const pp = easeOutBack(clamp2(st.popT / 0.4, 0, 1));
+    const bc = cellCenter(st.banana);
+    if (st.phase !== 'win') {
+      ctx.save();
+      ctx.globalAlpha = 0.35 + 0.2 * Math.sin(st.t * 4);
+      ell(ctx, bc.x, bc.y, cs * 0.42, cs * 0.42, '#fff3a0', 0);
+      ctx.restore();
+      drawBanana(ctx, bc.x, bc.y, u, pp);
+    }
+    const p = playerPos();
+    drawPlayer(ctx, p.x, p.y, u, pp, st.phase === 'hurt' || st.phase === 'fail', st.phase === 'win');
+    if (st.phase === 'win') drawBanana(ctx, p.x + 24*u, p.y - 56*u, u * 0.55, 1);
+    if (st.phase === 'hurt') {
+      for (let k = 0; k < 3; k++) {
+        const a = st.t * 7 + k * 2.1;
+        ell(ctx, p.x + Math.cos(a) * 24 * u, p.y - 62 * u + Math.sin(a) * 6 * u, 3.4 * u, 3.4 * u, '#e8b93c', 1.4);
+      }
+    }
+    drawGrabIndicator(ctx);
+  }
+
+  for (const p of st.parts) {
+    ctx.save();
+    ctx.globalAlpha = 1 - p.t / p.life;
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.rot);
+    ctx.fillStyle = p.col;
+    ctx.fillRect(-p.sz, -p.sz * 0.5, p.sz * 2, p.sz);
+    ctx.restore();
+  }
+
+  if (st.phase === 'hurt') {
+    ctx.fillStyle = 'rgba(200,40,30,' + (0.28 * (1 - st.hurtT)) + ')';
+    roundRect(ctx, bx - 3, by - 3, geo.boardW + 6, geo.boardH + 6, 12);
+    ctx.fill();
+  }
+
+  ctx.restore();
+  drawMessageArea(ctx);
+}
+
+/* ================= INPUT ================= */
+function isTouchNearPlayer(x, y) {
+  const p = playerPos();
+  const r = geo.cs * GRAB_RADIUS;
+  return Math.hypot(x - p.x, y - p.y) <= r;
+}
+
+function onPointerDown(x, y, e) {
+  if (!st) return;
+  Sound.init();
+
+  if (st.phase === 'memo') {
+    if (st.skipBtnRect &&
+        x >= st.skipBtnRect.x && x <= st.skipBtnRect.x + st.skipBtnRect.w &&
+        y >= st.skipBtnRect.y && y <= st.skipBtnRect.y + st.skipBtnRect.h) {
+      sndClick();
+      endMemo();
+    }
+    return;
+  }
+
+  if (st.phase !== 'play') return;
+
+  // Yêu cầu kéo phải bắt đầu từ nhân vật
+  if (!isTouchNearPlayer(x, y)) {
+    setMsg('👆 Chạm vào nhân vật để bắt đầu kéo!');
+    st.hintTimer = 1.5;
+    return;
+  }
+
+  // Bắt đầu kéo mới → huỷ path đang đi dở
+  st.path = null;
+  st.dragging = true;
+  st.grabPoint = { x, y };
+  st.targetCell = null;
+  st.previewPath = null;
+  sndGrab();
+}
+
+function onPointerMove(x, y) {
+  if (!st || st.phase !== 'play' || !st.dragging) return;
+  const cell = screenToCell(x, y);
+  if (!cell) return;
+  if (st.targetCell && st.targetCell.cx === cell.cx && st.targetCell.cy === cell.cy) return;
+  st.targetCell = cell;
+  computePreviewPath();
+}
+
+function onPointerUp() {
+  if (!st) return;
+  if (!st.dragging) return;
+  st.dragging = false;
+  st.grabPoint = null;
+
+  if (st.previewPath && st.previewPath.length > 0) {
+    st.path = st.previewPath.slice();
+    sndCommit();
+    const p = playerPos();
+    for (let k = 0; k < 6; k++) addPart(p.x, p.y + 20, '#fff3a0', 80);
+  } else if (st.previewPath && st.previewPath.length === 0) {
+    // Không di chuyển
+  } else if (st.targetCell) {
+    sndInvalid();
+  }
+  st.previewPath = null;
+  st.targetCell = null;
+}
+
+function onKeyDown(e) {
+  if (!st || LR.G.state !== 'play') return;
+  if (st.phase === 'memo') {
+    if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); endMemo(); }
+    return;
+  }
+  if (st.phase !== 'play') return;
+  const map = {
+    ArrowUp: [0,-1], KeyW: [0,-1],
+    ArrowDown: [0,1], KeyS: [0,1],
+    ArrowLeft: [-1,0], KeyA: [-1,0],
+    ArrowRight: [1,0], KeyD: [1,0]
+  };
+  const d = map[e.code];
+  if (!d) return;
+  e.preventDefault();
+
+  st.path = null;
+  st.targetCell = null;
+  st.previewPath = null;
+  st.dragging = false;
+
+  if (st.mv) return;
+  const nx = st.cx + d[0], ny = st.cy + d[1];
+  if (nx < 0 || ny < 0 || nx >= st.nW || ny >= st.nH) { sndBump(); st.nudge = { dx: d[0], dy: d[1], t: 0 }; return; }
+  const i = ny * st.nW + nx;
+  if (st.revealed[i]) { sndBump(); st.nudge = { dx: d[0], dy: d[1], t: 0 }; return; }
+  doStep(nx, ny);
+}
+
+function onKeyUp() {}
+
+/* ================= MOD ================= */
+const mod = {
+  enter() {
+    st = createInitialState();
+    st.totalSteps = 0;
+    st.totalTime = 0;
+    st.totalLives = 0;
+    Sound.init();
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    startLevel(0);
+  },
+  exit() {
+    window.removeEventListener('keydown', onKeyDown);
+    window.removeEventListener('keyup', onKeyUp);
+    st = null;
+    geo = null;
+  },
+  resize() {
+    if (st) computeLayout();
+  },
+  update(dt) { update(dt); },
+  draw() { render(); },
+  pointerDown(x, y, e) { onPointerDown(x, y, e); },
+  pointerMove(x, y, e) { onPointerMove(x, y); },
+  pointerUp(x, y, e) { onPointerUp(); },
+  legend(el) {
+    el.innerHTML = '<p class="note" style="margin:8px 0 0">' +
+      '🐕 Ghi nhớ chó → chó ẩn đi → <b>chạm vào nhân vật rồi kéo</b> để vẽ đường tới chuối. ' +
+      '<b>Nhả tay</b> để bắt đầu đi. Đường vàng = đường sẽ đi. ' +
+      'Đường đỏ + X = bị chặn bởi chó đã lộ. Thua sẽ chơi lại với bản đồ mới. Hoàn thành cả 4 cấp để qua ải.</p>';
+  }
+};
+
+/* ================= REGISTER ================= */
+const LEVEL = {
+  id: '18-tim-chuoi',
+  title: 'Tìm Chuối, Tránh Chó',
+  desc: 'Ghi nhớ vị trí các chú chó, rồi chạm vào nhân vật và kéo để vẽ đường tới nải chuối. Nhả tay để bắt đầu đi. Hoàn thành cả 4 cấp để qua ải!',
+  rules: [
+    'Các chú chó hiện ra một lúc — hãy ghi nhớ vị trí!',
+    'Chó ẩn đi — CHẠM VÀO NHÂN VẬT rồi kéo để vẽ đường đi',
+    'Nhả tay → nhân vật bắt đầu bước theo đường đã vẽ',
+    'Đi tới nải chuối 🍌 mà không giẫm vào ô chó',
+    'Mỗi cấp có ' + LIVES + ' mạng — thua sẽ chơi lại với bản đồ mới',
+    'Hoàn thành cả ' + LEVELS.length + ' cấp để qua ải'
+  ],
+  status: 'ready',
+  pad: false,
+  actLabel: 'ĐI',
+  mod
+};
+
+if (typeof LR.registerLevel === 'function') {
+  LR.registerLevel('ch1', LEVEL);
+} else {
+  const ch = (LR.chapters || []).find(c => c.id === 'ch1');
+  if (ch) {
+    if (!ch.levels) ch.levels = [];
+    const idx = ch.levels.findIndex(l => l && l.id === LEVEL.id);
+    if (idx >= 0) ch.levels[idx] = LEVEL;
+    else ch.levels.push(LEVEL);
+  }
+}
+})();
